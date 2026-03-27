@@ -89,7 +89,7 @@ func getVkCreds(link string) (string, string, string, error) {
 	token1 := resp["data"].(map[string]interface{})["access_token"].(string)
 
 	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s", link, token1)
-	url = "https://api.vk.ru/method/calls.getAnonymousToken?v=5.264"
+	url = "https://api.vk.ru/method/calls.getAnonymousToken?v=5.274&client_id=6287487"
 
 	resp, err = doRequest(data, url)
 	if err != nil {
