@@ -13,6 +13,7 @@
 - https://github.com/Urtyom-Alyanov/turn-proxy - реализация на Rust
 - https://github.com/jaykaiperson/lionheart - аналог для https://stream.wb.ru (статья: https://habr.com/ru/articles/1017410/)
 - https://github.com/kulikov0/whitelist-bypass - проброс через медиасервер SFU ВК и Яндекс Телемоста
+- https://github.com/NedgNDG/vk-proxy-auto-installer - автоустановщик VK TURN Proxy (TUI)
 
 #### Android
 - https://github.com/MYSOREZ/vk-turn-proxy-android - клиент для андроида
