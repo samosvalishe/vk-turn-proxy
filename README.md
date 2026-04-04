@@ -7,6 +7,7 @@
 ## Похожие проекты
 - https://github.com/MYSOREZ/vk-turn-proxy-android - клиент для андроида
 - https://github.com/kiper292/wireguard-turn-android - клиент для андроида интегрированный в WireGuard
+- https://github.com/WINGS-N/WINGSV - клиент для андроида с One UI, WireGuard, раздачей VPN с root
 - https://github.com/nullcstring/turnbridge - клиент для IOS
 - https://github.com/Urtyom-Alyanov/turn-proxy - реализация на Rust
 - https://github.com/jaykaiperson/lionheart - аналог для https://stream.wb.ru (статья: https://habr.com/ru/articles/1017410/)
