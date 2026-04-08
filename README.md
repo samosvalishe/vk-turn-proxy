@@ -424,7 +424,7 @@ curl -L -o client https://github.com/cacggghp/vk-turn-proxy/releases/latest/down
 
 ## VLESS-режим
 
-Если WireGuard блокируется DPI, можно использовать VLESS через флаг `-vless`. В этом режиме вместо UDP-пакетов пробрасываются TCP-соединения через TURN-туннель с помощью KCP и smux.
+Можно использовать VLESS через флаг `-vless`. В этом режиме вместо UDP-пакетов пробрасываются TCP-соединения через TURN-туннель с помощью KCP и smux.
 
 ### Настройка
 1. На VPS установить Xray с VLESS inbound
