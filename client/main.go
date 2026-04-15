@@ -228,7 +228,7 @@ func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 }
 
 func generateBrowserFp(profile Profile) string {
-	data := profile.UserAgent + profile.SecChUa + "1920x1080x24"
+	data := profile.UserAgent + profile.SecChUa + "1920x1080x24" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	h := md5.Sum([]byte(data))
 	return hex.EncodeToString(h[:])
 }
@@ -1559,6 +1559,7 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 		return
 	}
 	turnServerAddr = turnServerUDPAddr.String()
+	fmt.Println(turnServerUDPAddr.IP)
 	var cfg *turn.ClientConfig
 	var turnConn net.PacketConn
 	var d net.Dialer
@@ -2169,6 +2170,7 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 		return nil, nil, fmt.Errorf("resolve TURN addr: %w", err)
 	}
 	turnServerAddr = turnServerUDPAddr.String()
+	fmt.Println(turnServerUDPAddr.IP)
 
 	// 2. Connect to TURN server
 	var turnConn net.PacketConn
