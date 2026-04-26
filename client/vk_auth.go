@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
@@ -150,7 +151,7 @@ func getVkCredsCached(ctx context.Context, link string, streamID int) (string, s
 		expires := time.Until(cache.creds.ExpiresAt)
 		u, p, a := cache.creds.Username, cache.creds.Password, cache.creds.ServerAddr
 		cache.mutex.RUnlock()
-		if isDebug {
+		if appstate.Debug {
 			log.Printf("[STREAM %d] [VK Auth] Using cached credentials (cache=%d, expires in %v)", streamID, cacheID, expires)
 		}
 		return u, p, a, nil
@@ -206,7 +207,7 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 
 func fetchVkCreds(ctx context.Context, link string, streamID int) (string, string, string, error) {
 	// Check Global Lockout to prevent API bans
-	if time.Now().Unix() < globalCaptchaLockout.Load() {
+	if time.Now().Unix() < appstate.GlobalCaptchaLockout.Load() {
 		return "", "", "", fmt.Errorf("CAPTCHA_WAIT_REQUIRED: global lockout active")
 	}
 
@@ -347,14 +348,14 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		if errObj, hasErr := resp["error"].(map[string]interface{}); hasErr {
 			captchaErr := ParseVkCaptchaError(errObj)
 			if captchaErr != nil && captchaErr.IsCaptchaError() {
-				solveMode, hasSolveMode := captchaSolveModeForAttempt(attempt, manualCaptcha, autoCaptchaSliderPOC)
+				solveMode, hasSolveMode := captchaSolveModeForAttempt(attempt, appstate.ManualCaptcha, appstate.AutoCaptchaSliderPOC)
 				if !hasSolveMode {
 					log.Printf("[STREAM %d] [Captcha] No more solve modes available (attempt %d)", streamID, attempt+1)
 
 					// Engage global lockout to protect API
-					globalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
+					appstate.GlobalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
 
-					if connectedStreams.Load() == 0 {
+					if appstate.ConnectedStreams.Load() == 0 {
 						log.Printf("[STREAM %d] [FATAL] 0 connected streams and captcha solve modes exhausted.", streamID)
 						return "", "", "", fmt.Errorf("FATAL_CAPTCHA_FAILED_NO_STREAMS")
 					}
@@ -442,17 +443,17 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 				if solveErr != nil {
 					log.Printf("[STREAM %d] [Captcha] %s failed (attempt %d): %v", streamID, captchaSolveModeLabel(solveMode), attempt+1, solveErr)
 
-					nextSolveMode, hasNextSolveMode := captchaSolveModeForAttempt(attempt+1, manualCaptcha, autoCaptchaSliderPOC)
+					nextSolveMode, hasNextSolveMode := captchaSolveModeForAttempt(attempt+1, appstate.ManualCaptcha, appstate.AutoCaptchaSliderPOC)
 					if hasNextSolveMode {
 						log.Printf("[STREAM %d] [Captcha] Falling back to %s...", streamID, captchaSolveModeLabel(nextSolveMode))
 						continue
 					}
 
 					// Engage global lockout to protect API
-					globalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
+					appstate.GlobalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
 
 					// If we have 0 streams alive, this is fatal
-					if connectedStreams.Load() == 0 {
+					if appstate.ConnectedStreams.Load() == 0 {
 						log.Printf("[STREAM %d] [FATAL] 0 connected streams and manual captcha failed/timed out.", streamID)
 						return "", "", "", fmt.Errorf("FATAL_CAPTCHA_FAILED_NO_STREAMS")
 					}
@@ -526,7 +527,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	if !ok || len(urlsRaw) == 0 {
 		return "", "", "", fmt.Errorf("missing or empty urls in turn_server")
 	}
-	if isDebug {
+	if appstate.Debug {
 		log.Printf("[STREAM %d] [VK Auth] turn_server urls: %v", streamID, urlsRaw)
 	}
 	urlIdx := streamID % len(urlsRaw)
@@ -534,7 +535,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	if !ok {
 		return "", "", "", fmt.Errorf("turn server url[%d] is not a string", urlIdx)
 	}
-	if isDebug {
+	if appstate.Debug {
 		log.Printf("[STREAM %d] [VK Auth] picked turn url[%d]: %s", streamID, urlIdx, urlStr)
 	}
 

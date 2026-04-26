@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 )
 
 const captchaListenPort = "8765"
@@ -643,7 +645,7 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 		req.Body = io.NopCloser(bytes.NewReader(b))
 
-		if isDebug {
+		if appstate.Debug {
 			log.Printf("[Captcha Proxy] Real browser sent %s data: %s", req.URL.Path, redactBodyForLog(string(b)))
 			for k, v := range req.Header {
 				log.Printf("[Captcha Proxy] Header (%s): %s = %s", req.URL.Path, k, redactHeaderForLog(k, strings.Join(v, ", ")))
@@ -741,7 +743,7 @@ func solveCaptchaViaProxy(redirectURI string) (string, error) {
 
 			contentType := res.Header.Get("Content-Type")
 			contentEncoding := res.Header.Get("Content-Encoding")
-			if isDebug {
+			if appstate.Debug {
 				log.Printf("[Captcha Proxy] %s %d | Content-Type: %q, Encoding: %q", res.Request.Method, res.StatusCode, contentType, contentEncoding)
 			}
 

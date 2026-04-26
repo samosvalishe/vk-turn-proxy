@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -270,7 +271,7 @@ func getYandexCreds(link string) (string, string, string, error) {
 		},
 	}
 
-	if isDebug {
+	if appstate.Debug {
 		b, _ := json.MarshalIndent(req1, "", "  ")
 		log.Printf("Sending HELLO:\n%s", string(b))
 	}
@@ -288,7 +289,7 @@ func getYandexCreds(link string) (string, string, string, error) {
 		if err != nil {
 			return "", "", "", fmt.Errorf("ws read: %w", err)
 		}
-		if isDebug {
+		if appstate.Debug {
 			s := string(msg)
 			if len(s) > 800 {
 				s = s[:800] + "...(truncated)"

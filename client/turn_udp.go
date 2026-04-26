@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cbeuw/connutil"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
@@ -25,8 +26,8 @@ func dtlsFunc(ctx context.Context, conn net.PacketConn, peer *net.UDPAddr) (net.
 	}
 
 	select {
-	case handshakeSem <- struct{}{}:
-		defer func() { <-handshakeSem }()
+	case appstate.HandshakeSem <- struct{}{}:
+		defer func() { <-appstate.HandshakeSem }()
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -121,7 +122,7 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 			}
 
 			// Send back to the active WG client
-			if peerAddr := activeLocalPeer.Load(); peerAddr != nil {
+			if peerAddr := appstate.ActiveLocalPeer.Load(); peerAddr != nil {
 				if addr, ok := peerAddr.(net.Addr); ok {
 					if _, err := listenConn.WriteTo(buf[:n], addr); err != nil {
 						log.Printf("[STREAM %d] failed to forward packet to local peer: %v", streamID, err)
@@ -200,13 +201,13 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 			err = fmt.Errorf("failed to connect to TURN server: %s", err2)
 			return
 		}
-		if isDebug {
+		if appstate.Debug {
 			log.Printf("[STREAM %d] [TURN] tcp established %s -> %s",
 				streamID, conn.LocalAddr(), conn.RemoteAddr())
 		}
 		cc := &countingConn{Conn: conn}
 		defer func() {
-			if err != nil && isDebug {
+			if err != nil && appstate.Debug {
 				log.Printf("[STREAM %d] [TURN] tcp closing after fail: written=%d read=%d",
 					streamID, cc.written.Load(), cc.read.Load())
 			}
@@ -260,15 +261,15 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 	getStreamCache(streamID).errorCount.Store(0)
 
 	// Safely track active streams globally
-	connectedStreams.Add(1)
+	appstate.ConnectedStreams.Add(1)
 	defer func() {
-		connectedStreams.Add(-1)
+		appstate.ConnectedStreams.Add(-1)
 		if err1 := relayConn.Close(); err1 != nil {
 			err = fmt.Errorf("failed to close TURN allocated connection: %s", err1)
 		}
 	}()
 
-	if isDebug {
+	if appstate.Debug {
 		log.Printf("[STREAM %d] relayed-address=%s", streamID, relayConn.LocalAddr().String())
 	}
 
@@ -348,7 +349,7 @@ func oneDtlsConnectionLoop(ctx context.Context, peer *net.UDPAddr, listenConn ne
 			// During captcha lockout the upstream auth path stalls and DTLS
 			// handshakes time out. Wait for the lockout to clear instead of
 			// spinning on `continue`.
-			if lockout := globalCaptchaLockout.Load(); time.Now().Unix() < lockout && strings.Contains(err.Error(), "context deadline exceeded") {
+			if lockout := appstate.GlobalCaptchaLockout.Load(); time.Now().Unix() < lockout && strings.Contains(err.Error(), "context deadline exceeded") {
 				wait := time.Until(time.Unix(lockout, 0))
 				if wait < time.Second {
 					wait = time.Second
@@ -386,8 +387,8 @@ func oneTurnConnectionLoop(ctx context.Context, turnParams *turnParams, peer *ne
 			if err := <-c; err != nil {
 				if strings.Contains(err.Error(), "FATAL_CAPTCHA") {
 					log.Printf("[STREAM %d] Fatal manual captcha error. Shutting down application.", streamID)
-					if globalAppCancel != nil {
-						globalAppCancel()
+					if appstate.GlobalAppCancel != nil {
+						appstate.GlobalAppCancel()
 					}
 					return
 				}
@@ -400,7 +401,7 @@ func oneTurnConnectionLoop(ctx context.Context, turnParams *turnParams, peer *ne
 						case <-time.After(60 * time.Second):
 						}
 					} else {
-						lockoutEnd := globalCaptchaLockout.Load()
+						lockoutEnd := appstate.GlobalCaptchaLockout.Load()
 						sleepDuration := time.Until(time.Unix(lockoutEnd, 0))
 						if sleepDuration < 0 {
 							sleepDuration = 5 * time.Second

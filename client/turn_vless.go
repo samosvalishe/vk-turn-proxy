@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cacggghp/vk-turn-proxy/tcputil"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
@@ -343,7 +344,7 @@ func pipe(ctx context.Context, c1, c2 net.Conn) {
 		defer wg.Done()
 		defer cancel()
 		if _, err := io.Copy(c1, c2); err != nil {
-			if isDebug {
+			if appstate.Debug {
 				log.Printf("pipe: c1<-c2 copy error: %v", err)
 			}
 		}
@@ -352,19 +353,19 @@ func pipe(ctx context.Context, c1, c2 net.Conn) {
 		defer wg.Done()
 		defer cancel()
 		if _, err := io.Copy(c2, c1); err != nil {
-			if isDebug {
+			if appstate.Debug {
 				log.Printf("pipe: c2<-c1 copy error: %v", err)
 			}
 		}
 	}()
 	wg.Wait()
 	if err := c1.SetDeadline(time.Time{}); err != nil {
-		if isDebug {
+		if appstate.Debug {
 			log.Printf("pipe: failed to reset deadline c1: %v", err)
 		}
 	}
 	if err := c2.SetDeadline(time.Time{}); err != nil {
-		if isDebug {
+		if appstate.Debug {
 			log.Printf("pipe: failed to reset deadline c2: %v", err)
 		}
 	}

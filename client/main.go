@@ -12,28 +12,17 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 )
 
 type getCredsFunc func(ctx context.Context, link string, streamID int) (string, string, string, error)
 
-// Global state trackers
-var (
-	activeLocalPeer      atomic.Value
-	globalCaptchaLockout atomic.Int64
-	connectedStreams     atomic.Int32
-	globalAppCancel      context.CancelFunc
-	handshakeSem         = make(chan struct{}, 3)
-	isDebug              bool
-	manualCaptcha        bool
-	autoCaptchaSliderPOC bool
-)
-
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	globalAppCancel = cancel
+	appstate.GlobalAppCancel = cancel
 	defer cancel()
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGTERM, syscall.SIGINT)
@@ -93,9 +82,9 @@ func main() {
 		log.Panicf("Need either vk-link or yandex-link!")
 	}
 
-	isDebug = *debugFlag
-	manualCaptcha = *manualCaptchaFlag
-	autoCaptchaSliderPOC = !manualCaptcha
+	appstate.Debug = *debugFlag
+	appstate.ManualCaptcha = *manualCaptchaFlag
+	appstate.AutoCaptchaSliderPOC = !appstate.ManualCaptcha
 
 	var link string
 	var getCreds getCredsFunc
@@ -168,15 +157,15 @@ func main() {
 			}
 
 			// Save the local WireGuard peer address
-			current := activeLocalPeer.Load()
+			current := appstate.ActiveLocalPeer.Load()
 			if current == nil {
-				activeLocalPeer.Store(addr)
+				appstate.ActiveLocalPeer.Store(addr)
 			} else if addrStr, ok := current.(net.Addr); ok {
 				if addrStr.String() != addr.String() {
-					activeLocalPeer.Store(addr)
+					appstate.ActiveLocalPeer.Store(addr)
 				}
 			} else {
-				activeLocalPeer.Store(addr)
+				appstate.ActiveLocalPeer.Store(addr)
 			}
 
 			pkt.N = nRead
