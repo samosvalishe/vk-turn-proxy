@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/netadapt"
 	"github.com/cacggghp/vk-turn-proxy/tcputil"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
@@ -231,7 +232,7 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 			return nil, nil, fmt.Errorf("dial TURN (udp): %w", err1)
 		}
 		cleanupFns = append(cleanupFns, func() { _ = c.Close() })
-		turnConn = &connectedUDPConn{c}
+		turnConn = &netadapt.ConnectedUDPConn{UDPConn: c}
 	} else {
 		var d net.Dialer
 		c, err1 := d.DialContext(ctx1, "tcp", turnServerAddr)
@@ -253,7 +254,7 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 		STUNServerAddr:         turnServerAddr,
 		TURNServerAddr:         turnServerAddr,
 		Conn:                   turnConn,
-		Net:                    newDirectNet(),
+		Net:                    netadapt.NewDirectNet(),
 		Username:               user,
 		Password:               pass,
 		RequestedAddressFamily: addrFamily,
@@ -283,7 +284,7 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 		cleanup()
 		return nil, nil, fmt.Errorf("generate cert: %w", err)
 	}
-	dtlsPC := &relayPacketConn{relay: relayConn, peer: peer}
+	dtlsPC := &netadapt.RelayPacketConn{Relay: relayConn, Peer: peer}
 	dtlsConn, err := dtls.ClientWithOptions(dtlsPC, peer,
 		dtls.WithCertificates(certificate),
 		dtls.WithInsecureSkipVerify(true),

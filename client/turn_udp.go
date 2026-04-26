@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/netadapt"
 	"github.com/cbeuw/connutil"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
@@ -192,12 +193,12 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 				err = fmt.Errorf("failed to close TURN server connection: %s", err1)
 			}
 		}()
-		turnConn = &connectedUDPConn{conn}
+		turnConn = &netadapt.ConnectedUDPConn{UDPConn: conn}
 	} else {
 		conn, err2 := d.DialContext(ctx1, "tcp", turnServerAddr)
 		if err2 != nil {
 			log.Printf("[STREAM %d] [TURN] tcp dial %s failed: class=%s err=%v",
-				streamID, turnServerAddr, classifyNetErr(err2), err2)
+				streamID, turnServerAddr, netadapt.ClassifyNetErr(err2), err2)
 			err = fmt.Errorf("failed to connect to TURN server: %s", err2)
 			return
 		}
@@ -205,11 +206,11 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 			log.Printf("[STREAM %d] [TURN] tcp established %s -> %s",
 				streamID, conn.LocalAddr(), conn.RemoteAddr())
 		}
-		cc := &countingConn{Conn: conn}
+		cc := &netadapt.CountingConn{Conn: conn}
 		defer func() {
 			if err != nil && appstate.Debug {
 				log.Printf("[STREAM %d] [TURN] tcp closing after fail: written=%d read=%d",
-					streamID, cc.written.Load(), cc.read.Load())
+					streamID, cc.BytesWritten.Load(), cc.BytesRead.Load())
 			}
 			if err1 = conn.Close(); err1 != nil && err == nil {
 				err = fmt.Errorf("failed to close TURN server connection: %s", err1)
@@ -228,7 +229,7 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 		STUNServerAddr:         turnServerAddr,
 		TURNServerAddr:         turnServerAddr,
 		Conn:                   turnConn,
-		Net:                    newDirectNet(),
+		Net:                    netadapt.NewDirectNet(),
 		Username:               user,
 		Password:               pass,
 		RequestedAddressFamily: addrFamily,

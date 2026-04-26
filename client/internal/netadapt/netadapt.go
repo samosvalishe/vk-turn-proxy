@@ -1,4 +1,8 @@
-package main
+// Package netadapt contains thin net.Conn / transport.Net adapters used by
+// the TURN/DTLS code paths: direct net wiring for pion/turn, a connected-UDP
+// shim that ignores WriteTo addrs, byte-counters, and a relay PacketConn that
+// forces all writes to a fixed TURN peer.
+package netadapt
 
 import (
 	"context"
@@ -23,7 +27,9 @@ type directListenConfig struct {
 	*net.ListenConfig
 }
 
-func newDirectNet() transport.Net {
+// NewDirectNet returns a transport.Net implementation that delegates straight
+// to the stdlib net package without any wrapping.
+func NewDirectNet() transport.Net {
 	return directNet{}
 }
 
@@ -108,37 +114,42 @@ func (l directTCPListener) AcceptTCP() (transport.TCPConn, error) {
 	return l.TCPListener.AcceptTCP()
 }
 
-type connectedUDPConn struct {
+// ConnectedUDPConn wraps a connected *net.UDPConn so WriteTo ignores the
+// caller-supplied address and writes via the connected fd.
+type ConnectedUDPConn struct {
 	*net.UDPConn
 }
 
-func (c *connectedUDPConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+func (c *ConnectedUDPConn) WriteTo(p []byte, _ net.Addr) (int, error) {
 	return c.Write(p)
 }
 
-type countingConn struct {
+// CountingConn tallies bytes read/written through an embedded net.Conn.
+type CountingConn struct {
 	net.Conn
-	written atomic.Int64
-	read    atomic.Int64
+	BytesWritten atomic.Int64
+	BytesRead    atomic.Int64
 }
 
-func (c *countingConn) Read(p []byte) (int, error) {
+func (c *CountingConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 {
-		c.read.Add(int64(n))
+		c.BytesRead.Add(int64(n))
 	}
 	return n, err
 }
 
-func (c *countingConn) Write(p []byte) (int, error) {
+func (c *CountingConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	if n > 0 {
-		c.written.Add(int64(n))
+		c.BytesWritten.Add(int64(n))
 	}
 	return n, err
 }
 
-func classifyNetErr(err error) string {
+// ClassifyNetErr returns a short tag for common network error classes, used
+// to keep log lines compact. Returns "nil" for nil err.
+func ClassifyNetErr(err error) string {
 	if err == nil {
 		return "nil"
 	}
@@ -168,22 +179,22 @@ func classifyNetErr(err error) string {
 	return "other"
 }
 
-// relayPacketConn wraps a TURN relay PacketConn to direct all writes to the peer.
-type relayPacketConn struct {
-	relay net.PacketConn
-	peer  net.Addr
+// RelayPacketConn wraps a TURN relay PacketConn so all writes go to a fixed peer.
+type RelayPacketConn struct {
+	Relay net.PacketConn
+	Peer  net.Addr
 }
 
-func (r *relayPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
-	return r.relay.ReadFrom(b)
+func (r *RelayPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	return r.Relay.ReadFrom(b)
 }
 
-func (r *relayPacketConn) WriteTo(b []byte, _ net.Addr) (int, error) {
-	return r.relay.WriteTo(b, r.peer)
+func (r *RelayPacketConn) WriteTo(b []byte, _ net.Addr) (int, error) {
+	return r.Relay.WriteTo(b, r.Peer)
 }
 
-func (r *relayPacketConn) Close() error                       { return r.relay.Close() }
-func (r *relayPacketConn) LocalAddr() net.Addr                { return r.relay.LocalAddr() }
-func (r *relayPacketConn) SetDeadline(t time.Time) error      { return r.relay.SetDeadline(t) }
-func (r *relayPacketConn) SetReadDeadline(t time.Time) error  { return r.relay.SetReadDeadline(t) }
-func (r *relayPacketConn) SetWriteDeadline(t time.Time) error { return r.relay.SetWriteDeadline(t) }
+func (r *RelayPacketConn) Close() error                       { return r.Relay.Close() }
+func (r *RelayPacketConn) LocalAddr() net.Addr                { return r.Relay.LocalAddr() }
+func (r *RelayPacketConn) SetDeadline(t time.Time) error      { return r.Relay.SetDeadline(t) }
+func (r *RelayPacketConn) SetReadDeadline(t time.Time) error  { return r.Relay.SetReadDeadline(t) }
+func (r *RelayPacketConn) SetWriteDeadline(t time.Time) error { return r.Relay.SetWriteDeadline(t) }
