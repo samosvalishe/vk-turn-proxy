@@ -13,6 +13,7 @@ import (
 
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/netadapt"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/vkauth"
 	"github.com/cbeuw/connutil"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
@@ -251,15 +252,15 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 
 	relayConn, err1 := client.Allocate()
 	if err1 != nil {
-		if isAuthError(err1) {
-			handleAuthError(streamID)
+		if vkauth.IsAuthError(err1) {
+			vkauth.HandleAuthError(streamID)
 		}
 		err = fmt.Errorf("failed to allocate: %s", err1)
 		return
 	}
 
 	// Reset error count on successful allocation
-	getStreamCache(streamID).errorCount.Store(0)
+	vkauth.ResetErrorCount(streamID)
 
 	// Safely track active streams globally
 	appstate.ConnectedStreams.Add(1)

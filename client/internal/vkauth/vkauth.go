@@ -1,4 +1,4 @@
-package main
+package vkauth
 
 import (
 	"bytes"
@@ -76,6 +76,12 @@ var credentialsStore = struct {
 	caches: make(map[int]*StreamCredentialsCache),
 }
 
+// ResetErrorCount clears the auth-error counter for the cache covering the
+// given stream after a successful TURN allocation.
+func ResetErrorCount(streamID int) {
+	getStreamCache(streamID).errorCount.Store(0)
+}
+
 func getStreamCache(streamID int) *StreamCredentialsCache {
 	cacheID := getCacheID(streamID)
 
@@ -99,7 +105,7 @@ func getStreamCache(streamID int) *StreamCredentialsCache {
 	return cache
 }
 
-func isAuthError(err error) bool {
+func IsAuthError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -111,7 +117,7 @@ func isAuthError(err error) bool {
 		strings.Contains(errStr, "stale nonce")
 }
 
-func handleAuthError(streamID int) bool {
+func HandleAuthError(streamID int) bool {
 	cache := getStreamCache(streamID)
 	cacheID := getCacheID(streamID)
 
@@ -145,7 +151,7 @@ func (c *StreamCredentialsCache) invalidate(streamID int) {
 	log.Printf("[STREAM %d] [VK Auth] Credentials cache invalidated", streamID)
 }
 
-func getVkCredsCached(ctx context.Context, link string, streamID int) (string, string, string, error) {
+func GetCredsCached(ctx context.Context, link string, streamID int) (string, string, string, error) {
 	cache := getStreamCache(streamID)
 	cacheID := getCacheID(streamID)
 

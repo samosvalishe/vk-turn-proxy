@@ -17,6 +17,7 @@ import (
 
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dnsdial"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/vkauth"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/yandexauth"
 )
 
@@ -95,7 +96,7 @@ func main() {
 		link = parts[len(parts)-1]
 
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
-			return getVkCredsCached(ctx, s, streamID)
+			return vkauth.GetCredsCached(ctx, s, streamID)
 		}
 		if *n <= 0 {
 			*n = 10
