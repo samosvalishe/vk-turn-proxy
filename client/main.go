@@ -1998,6 +1998,19 @@ func main() {
 		log.Fatalf("Exit...\n")
 	}()
 
+	// Android workaround: when launched via /system/bin/linker(64) (the SELinux
+	// hack used to exec PIE binaries from app's filesDir, where exec is denied
+	// directly), bionic's linker shifts argv only for its internal getters but
+	// leaves the kernel-level argv on the stack untouched. Go's runtime reads
+	// argc/argv straight off that stack, so os.Args ends up as
+	//   [linker64, /path/to/exe, -peer, ADDR, ...]
+	// stdlib flag.Parse() stops at the first non-flag positional argument, so
+	// it would see "/path/to/exe" and never parse any of our flags. Drop the
+	// linker prefix here so flag.Parse() sees a normal argv./
+	if len(os.Args) > 1 && strings.Contains(os.Args[0], "linker") {
+		os.Args = os.Args[1:]
+	}
+
 	host := flag.String("turn", "", "override TURN server ip")
 	port := flag.String("port", "", "override TURN port")
 	listen := flag.String("listen", "127.0.0.1:9000", "listen on ip:port")
