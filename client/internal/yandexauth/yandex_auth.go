@@ -1,4 +1,4 @@
-package main
+package yandexauth
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func getYandexCreds(link string) (string, string, string, error) {
+func GetCreds(link string) (string, string, string, error) {
 	const telemostConfHost = "cloud-api.yandex.ru"
 	telemostConfPath := fmt.Sprintf("%s%s%s", "/telemost_front/v2/telemost/conferences/https%3A%2F%2Ftelemost.yandex.ru%2Fj%2F", link, "/connection?next_gen_media_platform_allowed=false")
 

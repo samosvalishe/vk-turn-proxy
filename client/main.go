@@ -17,6 +17,7 @@ import (
 
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dnsdial"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/yandexauth"
 )
 
 type getCredsFunc func(ctx context.Context, link string, streamID int) (string, string, string, error)
@@ -103,7 +104,7 @@ func main() {
 		parts := strings.Split(*yalink, "j/")
 		link = parts[len(parts)-1]
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
-			return getYandexCreds(s)
+			return yandexauth.GetCreds(s)
 		}
 		if *n <= 0 {
 			*n = 1
