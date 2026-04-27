@@ -2,59 +2,56 @@ package captcha
 
 import "testing"
 
-func TestCaptchaSolveModeForAttempt(t *testing.T) {
+func TestBuildChain(t *testing.T) {
 	t.Parallel()
 
 	t.Run("default flow", func(t *testing.T) {
 		t.Parallel()
-
-		mode, ok := SolveModeForAttempt(0, false, true)
-		if !ok || mode != SolveModeAuto {
-			t.Fatalf("expected first attempt to use auto captcha, got mode=%v ok=%v", mode, ok)
+		c := BuildChain(false, true)
+		expect := []SolveMode{SolveModeAuto, SolveModeSliderPOC, SolveModeManual}
+		if c.Len() != len(expect) {
+			t.Fatalf("len=%d want %d", c.Len(), len(expect))
 		}
-
-		mode, ok = SolveModeForAttempt(1, false, true)
-		if !ok || mode != SolveModeSliderPOC {
-			t.Fatalf("expected second attempt to use slider POC, got mode=%v ok=%v", mode, ok)
+		for i, want := range expect {
+			s, ok := c.Solver(i)
+			if !ok {
+				t.Fatalf("attempt %d: missing solver", i)
+			}
+			if s.Mode() != want {
+				t.Fatalf("attempt %d: mode=%v want %v", i, s.Mode(), want)
+			}
 		}
-
-		mode, ok = SolveModeForAttempt(2, false, true)
-		if !ok || mode != SolveModeManual {
-			t.Fatalf("expected third attempt to use manual captcha, got mode=%v ok=%v", mode, ok)
-		}
-
-		if _, ok = SolveModeForAttempt(3, false, true); ok {
-			t.Fatal("expected no fourth captcha attempt in default flow")
+		if _, ok := c.Solver(3); ok {
+			t.Fatal("expected no fourth attempt")
 		}
 	})
 
 	t.Run("manual only flow", func(t *testing.T) {
 		t.Parallel()
-
-		mode, ok := SolveModeForAttempt(0, true, true)
-		if !ok || mode != SolveModeManual {
-			t.Fatalf("expected manual mode on first attempt, got mode=%v ok=%v", mode, ok)
+		c := BuildChain(true, true)
+		s, ok := c.Solver(0)
+		if !ok || s.Mode() != SolveModeManual {
+			t.Fatalf("attempt 0: mode=%v ok=%v", s, ok)
 		}
-
-		if _, ok = SolveModeForAttempt(1, true, true); ok {
-			t.Fatal("expected only one manual captcha attempt when manual mode is forced")
+		if _, ok := c.Solver(1); ok {
+			t.Fatal("expected only one attempt in manual-only flow")
 		}
 	})
 
 	t.Run("flow without slider poc", func(t *testing.T) {
 		t.Parallel()
-
-		mode, ok := SolveModeForAttempt(0, false, false)
-		if !ok || mode != SolveModeAuto {
-			t.Fatalf("expected auto captcha first, got mode=%v ok=%v", mode, ok)
+		c := BuildChain(false, false)
+		expect := []SolveMode{SolveModeAuto, SolveModeManual}
+		if c.Len() != len(expect) {
+			t.Fatalf("len=%d want %d", c.Len(), len(expect))
 		}
-
-		mode, ok = SolveModeForAttempt(1, false, false)
-		if !ok || mode != SolveModeManual {
-			t.Fatalf("expected manual captcha second when slider POC is disabled, got mode=%v ok=%v", mode, ok)
+		for i, want := range expect {
+			s, ok := c.Solver(i)
+			if !ok || s.Mode() != want {
+				t.Fatalf("attempt %d: mode=%v want %v ok=%v", i, s, want, ok)
+			}
 		}
-
-		if _, ok = SolveModeForAttempt(2, false, false); ok {
+		if _, ok := c.Solver(2); ok {
 			t.Fatal("expected only two attempts when slider POC is disabled")
 		}
 	})

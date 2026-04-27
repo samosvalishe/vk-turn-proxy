@@ -33,41 +33,6 @@ const (
 	SolveModeManual
 )
 
-func SolveModeForAttempt(attempt int, manualOnly bool, enableSliderPOC bool) (SolveMode, bool) {
-	if manualOnly {
-		return SolveModeManual, attempt == 0
-	}
-
-	switch attempt {
-	case 0:
-		return SolveModeAuto, true
-	case 1:
-		if enableSliderPOC {
-			return SolveModeSliderPOC, true
-		}
-		return SolveModeManual, true
-	case 2:
-		if enableSliderPOC {
-			return SolveModeManual, true
-		}
-	}
-
-	return 0, false
-}
-
-func SolveModeLabel(mode SolveMode) string {
-	switch mode {
-	case SolveModeAuto:
-		return "auto captcha"
-	case SolveModeSliderPOC:
-		return "auto captcha slider POC"
-	case SolveModeManual:
-		return "manual captcha"
-	default:
-		return "captcha"
-	}
-}
-
 // ApplyBrowserProfile applies consistent User-Agent and Client Hints to bypass WAFs
 func ApplyBrowserProfile(req *http.Request, profile prof.Profile) {
 	req.Header.Set("User-Agent", profile.UserAgent)

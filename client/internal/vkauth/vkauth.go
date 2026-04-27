@@ -347,6 +347,19 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
 	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
 
+	chain := captcha.BuildChain(appstate.ManualCaptcha, appstate.AutoCaptchaSliderPOC)
+	deps := captcha.SolveDeps{Client: client, Profile: profile, StreamID: streamID}
+
+	exhausted := func() error {
+		// Engage global lockout to protect API
+		appstate.GlobalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
+		if appstate.ConnectedStreams.Load() == 0 {
+			log.Printf("[STREAM %d] [FATAL] 0 connected streams and captcha solve modes exhausted.", streamID)
+			return fmt.Errorf("FATAL_CAPTCHA_FAILED_NO_STREAMS")
+		}
+		return fmt.Errorf("CAPTCHA_WAIT_REQUIRED")
+	}
+
 	var token2 string
 	for attempt := 0; ; attempt++ {
 		resp, err = doRequest(data, urlAddr)
@@ -357,129 +370,32 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		if errObj, hasErr := resp["error"].(map[string]interface{}); hasErr {
 			captchaErr := captcha.ParseVkCaptchaError(errObj)
 			if captchaErr != nil && captchaErr.IsCaptchaError() {
-				solveMode, hasSolveMode := captcha.SolveModeForAttempt(attempt, appstate.ManualCaptcha, appstate.AutoCaptchaSliderPOC)
-				if !hasSolveMode {
+				solver, ok := chain.Solver(attempt)
+				if !ok {
 					log.Printf("[STREAM %d] [Captcha] No more solve modes available (attempt %d)", streamID, attempt+1)
-
-					// Engage global lockout to protect API
-					appstate.GlobalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
-
-					if appstate.ConnectedStreams.Load() == 0 {
-						log.Printf("[STREAM %d] [FATAL] 0 connected streams and captcha solve modes exhausted.", streamID)
-						return "", "", "", fmt.Errorf("FATAL_CAPTCHA_FAILED_NO_STREAMS")
-					}
-
-					return "", "", "", fmt.Errorf("CAPTCHA_WAIT_REQUIRED")
+					return "", "", "", exhausted()
 				}
 
-				var successToken string
-				var captchaKey string
-				var solveErr error
-
-				switch solveMode {
-				case captcha.SolveModeAuto:
-					if captchaErr.SessionToken != "" && captchaErr.RedirectURI != "" {
-						successToken, solveErr = captcha.SolveVkCaptcha(ctx, captchaErr, streamID, client, profile, false)
-						if solveErr != nil {
-							log.Printf("[STREAM %d] [Captcha] Auto captcha failed: %v", streamID, solveErr)
-						}
-					} else {
-						solveErr = fmt.Errorf("missing fields for auto solve")
-					}
-				case captcha.SolveModeSliderPOC:
-					if captchaErr.SessionToken != "" && captchaErr.RedirectURI != "" {
-						successToken, solveErr = captcha.SolveVkCaptcha(ctx, captchaErr, streamID, client, profile, true)
-						if solveErr != nil {
-							log.Printf("[STREAM %d] [Captcha] Auto captcha slider POC failed: %v", streamID, solveErr)
-						}
-					} else {
-						solveErr = fmt.Errorf("missing fields for slider POC auto solve")
-					}
-				case captcha.SolveModeManual:
-					log.Printf("[STREAM %d] [Captcha] Triggering manual captcha fallback...", streamID)
-					// Use context.Background() so that a short deadline on the parent ctx
-					// (e.g. the overall auth timeout) doesn't cut the user's solve time short.
-					manualCtx, manualCancel := context.WithTimeout(context.Background(), 3*time.Minute)
-
-					type manualRes struct {
-						token string
-						key   string
-						err   error
-					}
-					resCh := make(chan manualRes, 1)
-
-					go func() {
-						var t, k string
-						var e error
-						if captchaErr.RedirectURI != "" {
-							t, e = captcha.SolveViaProxy(captchaErr.RedirectURI)
-						} else if captchaErr.CaptchaImg != "" {
-							k, e = captcha.SolveViaHTTP(captchaErr.CaptchaImg)
-						} else {
-							e = fmt.Errorf("no redirect_uri or captcha_img")
-						}
-						resCh <- manualRes{t, k, e}
-					}()
-
-					select {
-					case res := <-resCh:
-						successToken = res.token
-						captchaKey = res.key
-						solveErr = res.err
-						// Token may be present even when err != nil (e.g. srv.Shutdown
-						// timed out on iSH after the token was already received).
-						// Treat a non-empty token as success regardless of the error.
-						if successToken != "" || captchaKey != "" {
-							if solveErr != nil {
-								log.Printf("[STREAM %d] [Captcha] Token received (ignoring cleanup error: %v)", streamID, solveErr)
-								solveErr = nil
-							}
-							log.Printf("[STREAM %d] [Captcha] Successfully got token from browser", streamID)
-						} else if solveErr != nil {
-							log.Printf("[STREAM %d] [Captcha] captcha.SolveViaProxy returned error: %v", streamID, solveErr)
-						}
-					case <-manualCtx.Done():
-						if manualCtx.Err() == context.DeadlineExceeded {
-							solveErr = fmt.Errorf("manual captcha timed out after 3m")
-						} else {
-							solveErr = fmt.Errorf("manual captcha interrupted: %w", manualCtx.Err())
-						}
-					}
-					manualCancel()
-				}
-
-				// If solving failed (auto or manual) or timed out
+				res, solveErr := solver.Solve(ctx, captchaErr, deps)
 				if solveErr != nil {
-					log.Printf("[STREAM %d] [Captcha] %s failed (attempt %d): %v", streamID, captcha.SolveModeLabel(solveMode), attempt+1, solveErr)
-
-					nextSolveMode, hasNextSolveMode := captcha.SolveModeForAttempt(attempt+1, appstate.ManualCaptcha, appstate.AutoCaptchaSliderPOC)
-					if hasNextSolveMode {
-						log.Printf("[STREAM %d] [Captcha] Falling back to %s...", streamID, captcha.SolveModeLabel(nextSolveMode))
+					log.Printf("[STREAM %d] [Captcha] %s failed (attempt %d): %v", streamID, solver.Label(), attempt+1, solveErr)
+					if next, hasNext := chain.Solver(attempt + 1); hasNext {
+						log.Printf("[STREAM %d] [Captcha] Falling back to %s...", streamID, next.Label())
 						continue
 					}
-
-					// Engage global lockout to protect API
-					appstate.GlobalCaptchaLockout.Store(time.Now().Add(60 * time.Second).Unix())
-
-					// If we have 0 streams alive, this is fatal
-					if appstate.ConnectedStreams.Load() == 0 {
-						log.Printf("[STREAM %d] [FATAL] 0 connected streams and manual captcha failed/timed out.", streamID)
-						return "", "", "", fmt.Errorf("FATAL_CAPTCHA_FAILED_NO_STREAMS")
-					}
-
-					return "", "", "", fmt.Errorf("CAPTCHA_WAIT_REQUIRED")
+					return "", "", "", exhausted()
 				}
 
 				if captchaErr.CaptchaAttempt == "0" || captchaErr.CaptchaAttempt == "" {
 					captchaErr.CaptchaAttempt = "1"
 				}
 
-				if captchaKey != "" {
+				if res.CaptchaKey != "" {
 					data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=%s&captcha_sid=%s&access_token=%s",
-						link, escapedName, neturl.QueryEscape(captchaKey), captchaErr.CaptchaSid, token1)
+						link, escapedName, neturl.QueryEscape(res.CaptchaKey), captchaErr.CaptchaSid, token1)
 				} else {
 					data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&captcha_key=&captcha_sid=%s&is_sound_captcha=0&success_token=%s&captcha_ts=%s&captcha_attempt=%s&access_token=%s",
-						link, escapedName, captchaErr.CaptchaSid, neturl.QueryEscape(successToken), captchaErr.CaptchaTs, captchaErr.CaptchaAttempt, token1)
+						link, escapedName, captchaErr.CaptchaSid, neturl.QueryEscape(res.SuccessToken), captchaErr.CaptchaTs, captchaErr.CaptchaAttempt, token1)
 				}
 				continue
 			}
