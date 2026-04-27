@@ -1,4 +1,4 @@
-package main
+package turnconn
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/dispatcher"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/netadapt"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/vkauth"
 	"github.com/cbeuw/connutil"
@@ -55,7 +56,7 @@ func dtlsFunc(ctx context.Context, conn net.PacketConn, peer *net.UDPAddr) (net.
 	return dtlsConn, nil
 }
 
-func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.PacketConn, inboundChan <-chan *UDPPacket, connchan chan<- net.PacketConn, okchan chan<- struct{}, streamID int) error {
+func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.PacketConn, inboundChan <-chan *dispatcher.UDPPacket, connchan chan<- net.PacketConn, okchan chan<- struct{}, streamID int) error {
 	time.Sleep(time.Duration(rand.Intn(400)+100) * time.Millisecond)
 
 	dtlsctx, dtlscancel := context.WithCancel(ctx)
@@ -108,7 +109,7 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 				return
 			case pkt := <-inboundChan:
 				_, _ = dtlsConn.Write(pkt.Data[:pkt.N])
-				packetPool.Put(pkt)
+				dispatcher.PacketPool.Put(pkt)
 			}
 		}
 	}()
@@ -141,19 +142,23 @@ func oneDtlsConnection(ctx context.Context, peer *net.UDPAddr, listenConn net.Pa
 	return nil
 }
 
-type turnParams struct {
-	host     string
-	port     string
-	link     string
-	udp      bool
-	getCreds getCredsFunc
+// GetCredsFunc fetches TURN credentials for the given stream and returns
+// (username, password, serverAddr, error).
+type GetCredsFunc func(ctx context.Context, link string, streamID int) (string, string, string, error)
+
+type Params struct {
+	Host     string
+	Port     string
+	Link     string
+	UDP      bool
+	GetCreds GetCredsFunc
 }
 
-func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UDPAddr, conn2 net.PacketConn, streamID int, c chan<- error) {
+func oneTurnConnection(ctx context.Context, params *Params, peer *net.UDPAddr, conn2 net.PacketConn, streamID int, c chan<- error) {
 	time.Sleep(time.Duration(rand.Intn(400)+100) * time.Millisecond)
 	var err error
 	defer func() { c <- err }()
-	user, pass, urlTarget, err1 := turnParams.getCreds(ctx, turnParams.link, streamID)
+	user, pass, urlTarget, err1 := params.GetCreds(ctx, params.Link, streamID)
 	if err1 != nil {
 		err = fmt.Errorf("failed to get TURN credentials: %s", err1)
 		return
@@ -163,15 +168,15 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 		err = fmt.Errorf("failed to parse TURN server address: %s", err1)
 		return
 	}
-	if turnParams.host != "" {
-		urlhost = turnParams.host
+	if params.Host != "" {
+		urlhost = params.Host
 	}
-	if turnParams.port != "" {
-		urlport = turnParams.port
+	if params.Port != "" {
+		urlport = params.Port
 	}
 	var turnServerAddr string
 	turnServerAddr = net.JoinHostPort(urlhost, urlport)
-	log.Printf("[STREAM %d] [TURN] dialing %s (udp=%v)", streamID, turnServerAddr, turnParams.udp)
+	log.Printf("[STREAM %d] [TURN] dialing %s (udp=%v)", streamID, turnServerAddr, params.UDP)
 	turnServerUDPAddr, err1 := net.ResolveUDPAddr("udp", turnServerAddr)
 	if err1 != nil {
 		err = fmt.Errorf("failed to resolve TURN server address: %s", err1)
@@ -183,7 +188,7 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 	var d net.Dialer
 	ctx1, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if turnParams.udp {
+	if params.UDP {
 		conn, err2 := net.DialUDP("udp", nil, turnServerUDPAddr) // nolint: noctx
 		if err2 != nil {
 			err = fmt.Errorf("failed to connect to TURN server: %s", err2)
@@ -338,7 +343,7 @@ func oneTurnConnection(ctx context.Context, turnParams *turnParams, peer *net.UD
 	}
 }
 
-func oneDtlsConnectionLoop(ctx context.Context, peer *net.UDPAddr, listenConn net.PacketConn, inboundChan <-chan *UDPPacket, connchan chan<- net.PacketConn, okchan chan<- struct{}, streamID int) {
+func DtlsConnectionLoop(ctx context.Context, peer *net.UDPAddr, listenConn net.PacketConn, inboundChan <-chan *dispatcher.UDPPacket, connchan chan<- net.PacketConn, okchan chan<- struct{}, streamID int) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -372,7 +377,7 @@ func oneDtlsConnectionLoop(ctx context.Context, peer *net.UDPAddr, listenConn ne
 	}
 }
 
-func oneTurnConnectionLoop(ctx context.Context, turnParams *turnParams, peer *net.UDPAddr, connchan <-chan net.PacketConn, t <-chan time.Time, streamID int) {
+func TurnConnectionLoop(ctx context.Context, params *Params, peer *net.UDPAddr, connchan <-chan net.PacketConn, t <-chan time.Time, streamID int) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -384,7 +389,7 @@ func oneTurnConnectionLoop(ctx context.Context, turnParams *turnParams, peer *ne
 				return
 			}
 			c := make(chan error)
-			go oneTurnConnection(ctx, turnParams, peer, conn2, streamID, c)
+			go oneTurnConnection(ctx, params, peer, conn2, streamID, c)
 
 			if err := <-c; err != nil {
 				if strings.Contains(err.Error(), "FATAL_CAPTCHA") {

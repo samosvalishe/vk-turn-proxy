@@ -1,4 +1,4 @@
-package main
+package turnconn
 
 import (
 	"context"
@@ -62,8 +62,8 @@ func (p *sessionPool) count() int {
 	return len(p.sessions)
 }
 
-// runVLESSMode implements TCP forwarding with round-robin across N TURN sessions.
-func runVLESSMode(ctx context.Context, tp *turnParams, peer *net.UDPAddr, listenAddr string, numSessions int) {
+// RunVLESSMode implements TCP forwarding with round-robin across N TURN sessions.
+func RunVLESSMode(ctx context.Context, tp *Params, peer *net.UDPAddr, listenAddr string, numSessions int) {
 	pool := &sessionPool{}
 
 	// Start N session maintainers with staggered startup
@@ -147,7 +147,7 @@ func runVLESSMode(ctx context.Context, tp *turnParams, peer *net.UDPAddr, listen
 }
 
 // maintainVLESSSession keeps one TURN+DTLS+KCP+smux session alive, reconnecting on failure.
-func maintainVLESSSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, id int, pool *sessionPool) {
+func maintainVLESSSession(ctx context.Context, tp *Params, peer *net.UDPAddr, id int, pool *sessionPool) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -193,7 +193,7 @@ func maintainVLESSSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr
 
 // createSmuxSession establishes a full TURN+DTLS+KCP+smux pipeline and returns
 // the smux session along with a cleanup function to tear down all layers.
-func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, id int) (*smux.Session, func(), error) {
+func createSmuxSession(ctx context.Context, tp *Params, peer *net.UDPAddr, id int) (*smux.Session, func(), error) {
 	var cleanupFns []func()
 	cleanup := func() {
 		for i := len(cleanupFns) - 1; i >= 0; i-- {
@@ -202,7 +202,7 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 	}
 
 	// 1. Get TURN credentials
-	user, pass, rawURL, err := tp.getCreds(ctx, tp.link, id)
+	user, pass, rawURL, err := tp.GetCreds(ctx, tp.Link, id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get TURN creds: %w", err)
 	}
@@ -210,11 +210,11 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse TURN addr: %w", err)
 	}
-	if tp.host != "" {
-		urlhost = tp.host
+	if tp.Host != "" {
+		urlhost = tp.Host
 	}
-	if tp.port != "" {
-		urlport = tp.port
+	if tp.Port != "" {
+		urlport = tp.Port
 	}
 	turnServerAddr := net.JoinHostPort(urlhost, urlport)
 	turnServerUDPAddr, err := net.ResolveUDPAddr("udp", turnServerAddr)
@@ -227,7 +227,7 @@ func createSmuxSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr, i
 	var turnConn net.PacketConn
 	ctx1, cancel1 := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel1()
-	if tp.udp {
+	if tp.UDP {
 		c, err1 := net.DialUDP("udp", nil, turnServerUDPAddr)
 		if err1 != nil {
 			return nil, nil, fmt.Errorf("dial TURN (udp): %w", err1)

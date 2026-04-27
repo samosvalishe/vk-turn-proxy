@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/dispatcher"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dnsdial"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/turnconn"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/vkauth"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/yandexauth"
 )
-
-type getCredsFunc func(ctx context.Context, link string, streamID int) (string, string, string, error)
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -40,15 +40,6 @@ func main() {
 		log.Fatalf("Exit...\n")
 	}()
 
-	// Android workaround: when launched via /system/bin/linker(64) (the SELinux
-	// hack used to exec PIE binaries from app's filesDir, where exec is denied
-	// directly), bionic's linker shifts argv only for its internal getters but
-	// leaves the kernel-level argv on the stack untouched. Go's runtime reads
-	// argc/argv straight off that stack, so os.Args ends up as
-	//   [linker64, /path/to/exe, -peer, ADDR, ...]
-	// stdlib flag.Parse() stops at the first non-flag positional argument, so
-	// it would see "/path/to/exe" and never parse any of our flags. Drop the
-	// linker prefix here so flag.Parse() sees a normal argv./
 	if len(os.Args) > 1 && strings.Contains(os.Args[0], "linker") {
 		os.Args = os.Args[1:]
 	}
@@ -90,7 +81,7 @@ func main() {
 	appstate.AutoCaptchaSliderPOC = !appstate.ManualCaptcha
 
 	var link string
-	var getCreds getCredsFunc
+	var getCreds turnconn.GetCredsFunc
 	if *vklink != "" {
 		parts := strings.Split(*vklink, "join/")
 		link = parts[len(parts)-1]
@@ -115,16 +106,16 @@ func main() {
 		link = link[:idx]
 	}
 
-	params := &turnParams{
-		host:     *host,
-		port:     *port,
-		link:     link,
-		udp:      *udp,
-		getCreds: getCreds,
+	params := &turnconn.Params{
+		Host:     *host,
+		Port:     *port,
+		Link:     link,
+		UDP:      *udp,
+		GetCreds: getCreds,
 	}
 
 	if *vlessMode {
-		runVLESSMode(ctx, params, peer, *listen, *n)
+		turnconn.RunVLESSMode(ctx, params, peer, *listen, *n)
 		return
 	}
 
@@ -144,12 +135,12 @@ func main() {
 	}
 
 	// Shared Worker Pool Queue for Aggregation
-	inboundChan := make(chan *UDPPacket, 2000)
+	inboundChan := make(chan *dispatcher.UDPPacket, 2000)
 
 	go func() {
 		for {
-			pktIface := packetPool.Get()
-			pkt, ok := pktIface.(*UDPPacket)
+			pktIface := dispatcher.PacketPool.Get()
+			pkt, ok := pktIface.(*dispatcher.UDPPacket)
 			if !ok {
 				log.Printf("packetPool returned unexpected type: %T", pktIface)
 				continue
@@ -177,7 +168,7 @@ func main() {
 			case inboundChan <- pkt:
 			default:
 				// Drop the packet only if the global queue is completely full
-				packetPool.Put(pkt)
+				dispatcher.PacketPool.Put(pkt)
 			}
 		}
 	}()
@@ -190,12 +181,12 @@ func main() {
 	wg1.Add(1)
 	go func() {
 		defer wg1.Done()
-		oneDtlsConnectionLoop(ctx, peer, listenConn, inboundChan, connchan, okchan, 1)
+		turnconn.DtlsConnectionLoop(ctx, peer, listenConn, inboundChan, connchan, okchan, 1)
 	}()
 	wg1.Add(1)
 	go func() {
 		defer wg1.Done()
-		oneTurnConnectionLoop(ctx, params, peer, connchan, t, 1)
+		turnconn.TurnConnectionLoop(ctx, params, peer, connchan, t, 1)
 	}()
 
 	select {
@@ -208,12 +199,12 @@ func main() {
 		wg1.Add(1)
 		go func(streamID int) {
 			defer wg1.Done()
-			oneDtlsConnectionLoop(ctx, peer, listenConn, inboundChan, cchan, nil, streamID)
+			turnconn.DtlsConnectionLoop(ctx, peer, listenConn, inboundChan, cchan, nil, streamID)
 		}(i)
 		wg1.Add(1)
 		go func(streamID int) {
 			defer wg1.Done()
-			oneTurnConnectionLoop(ctx, params, peer, cchan, t, streamID)
+			turnconn.TurnConnectionLoop(ctx, params, peer, cchan, t, streamID)
 		}(i)
 	}
 
