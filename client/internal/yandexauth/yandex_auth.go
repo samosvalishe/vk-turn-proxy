@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appcfg"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/captcha"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dnsdial"
 	prof "github.com/cacggghp/vk-turn-proxy/client/internal/profile"
@@ -18,7 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func GetCreds(link string) (string, string, string, error) {
+func GetCreds(link string, cfg *appcfg.Config) (string, string, string, error) {
 	const telemostConfHost = "cloud-api.yandex.ru"
 	telemostConfPath := fmt.Sprintf("%s%s%s", "/telemost_front/v2/telemost/conferences/https%3A%2F%2Ftelemost.yandex.ru%2Fj%2F", link, "/connection?next_gen_media_platform_allowed=false")
 
@@ -137,7 +137,7 @@ func GetCreds(link string) (string, string, string, error) {
 	}
 
 	endpoint := "https://" + telemostConfHost + telemostConfPath
-	appD := dnsdial.AppDialer()
+	appD := dnsdial.AppDialer(cfg.DNSMode)
 	tr := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
@@ -194,7 +194,7 @@ func GetCreds(link string) (string, string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	wsAppD := dnsdial.AppDialer()
+	wsAppD := dnsdial.AppDialer(cfg.DNSMode)
 	dialer := websocket.Dialer{NetDialContext: wsAppD.DialContext}
 	var conn *websocket.Conn
 	conn, resp, err = dialer.DialContext(ctx, data.Wss, h)
@@ -274,7 +274,7 @@ func GetCreds(link string) (string, string, string, error) {
 		},
 	}
 
-	if appstate.Debug {
+	if cfg.Debug {
 		b, _ := json.MarshalIndent(req1, "", "  ")
 		log.Printf("Sending HELLO:\n%s", string(b))
 	}
@@ -292,7 +292,7 @@ func GetCreds(link string) (string, string, string, error) {
 		if err != nil {
 			return "", "", "", fmt.Errorf("ws read: %w", err)
 		}
-		if appstate.Debug {
+		if cfg.Debug {
 			s := string(msg)
 			if len(s) > 800 {
 				s = s[:800] + "...(truncated)"

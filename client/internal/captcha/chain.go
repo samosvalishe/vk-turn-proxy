@@ -11,6 +11,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appcfg"
 	prof "github.com/cacggghp/vk-turn-proxy/client/internal/profile"
 
 	tlsclient "github.com/bogdanfinn/tls-client"
@@ -22,6 +23,7 @@ type SolveDeps struct {
 	Client   tlsclient.HttpClient
 	Profile  prof.Profile
 	StreamID int
+	Cfg      *appcfg.Config
 }
 
 // SolveResult — результат одной попытки. Token/Key взаимоисключающие
@@ -129,7 +131,7 @@ func (manualSolver) Solve(ctx context.Context, captchaErr *VkCaptchaError, deps 
 		var e error
 		switch {
 		case captchaErr.RedirectURI != "":
-			t, e = SolveViaProxy(captchaErr.RedirectURI)
+			t, e = SolveViaProxy(captchaErr.RedirectURI, deps.Cfg)
 		case captchaErr.CaptchaImg != "":
 			k, e = SolveViaHTTP(captchaErr.CaptchaImg)
 		default:

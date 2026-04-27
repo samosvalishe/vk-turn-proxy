@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appcfg"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/captcha"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dnsdial"
@@ -151,7 +152,7 @@ func (c *StreamCredentialsCache) invalidate(streamID int) {
 	log.Printf("[STREAM %d] [VK Auth] Credentials cache invalidated", streamID)
 }
 
-func GetCredsCached(ctx context.Context, link string, streamID int) (string, string, string, error) {
+func GetCredsCached(ctx context.Context, link string, streamID int, cfg *appcfg.Config) (string, string, string, error) {
 	cache := getStreamCache(streamID)
 	cacheID := getCacheID(streamID)
 
@@ -160,7 +161,7 @@ func GetCredsCached(ctx context.Context, link string, streamID int) (string, str
 		expires := time.Until(cache.creds.ExpiresAt)
 		u, p, a := cache.creds.Username, cache.creds.Password, cache.creds.ServerAddr
 		cache.mutex.RUnlock()
-		if appstate.Debug {
+		if cfg.Debug {
 			log.Printf("[STREAM %d] [VK Auth] Using cached credentials (cache=%d, expires in %v)", streamID, cacheID, expires)
 		}
 		return u, p, a, nil
@@ -175,7 +176,7 @@ func GetCredsCached(ctx context.Context, link string, streamID int) (string, str
 		return cache.creds.Username, cache.creds.Password, cache.creds.ServerAddr, nil
 	}
 
-	user, pass, addr, err := fetchVkCredsSerialized(ctx, link, streamID)
+	user, pass, addr, err := fetchVkCredsSerialized(ctx, link, streamID, cfg)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -189,7 +190,7 @@ var (
 	globalLastVkFetchTime time.Time
 )
 
-func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (string, string, string, error) {
+func fetchVkCredsSerialized(ctx context.Context, link string, streamID int, cfg *appcfg.Config) (string, string, string, error) {
 	vkRequestMu.Lock()
 	defer vkRequestMu.Unlock()
 
@@ -211,10 +212,10 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 		globalLastVkFetchTime = time.Now()
 	}()
 
-	return fetchVkCreds(ctx, link, streamID)
+	return fetchVkCreds(ctx, link, streamID, cfg)
 }
 
-func fetchVkCreds(ctx context.Context, link string, streamID int) (string, string, string, error) {
+func fetchVkCreds(ctx context.Context, link string, streamID int, cfg *appcfg.Config) (string, string, string, error) {
 	// Check Global Lockout to prevent API bans
 	if time.Now().Unix() < appstate.GlobalCaptchaLockout.Load() {
 		return "", "", "", fmt.Errorf("CAPTCHA_WAIT_REQUIRED: global lockout active")
@@ -226,7 +227,7 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 	for _, creds := range vkCredentialsList {
 		log.Printf("[STREAM %d] [VK Auth] Trying credentials: client_id=%s", streamID, creds.ClientID)
 
-		user, pass, addr, err := getTokenChain(ctx, link, streamID, creds, jar)
+		user, pass, addr, err := getTokenChain(ctx, link, streamID, creds, jar, cfg)
 
 		if err == nil {
 			log.Printf("[STREAM %d] [VK Auth] Success with client_id=%s", streamID, creds.ClientID)
@@ -249,7 +250,7 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 	return "", "", "", fmt.Errorf("all VK credentials failed: %w", lastErr)
 }
 
-func getTokenChain(ctx context.Context, link string, streamID int, creds VKCredentials, jar tlsclient.CookieJar) (string, string, string, error) {
+func getTokenChain(ctx context.Context, link string, streamID int, creds VKCredentials, jar tlsclient.CookieJar, cfg *appcfg.Config) (string, string, string, error) {
 	profile := prof.Profile{
 		UserAgent:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
 		SecChUa:         `"Not(A:Brand";v="99", "Google Chrome";v="146", "Chromium";v="146"`,
@@ -261,7 +262,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(jar),
-		tlsclient.WithDialer(dnsdial.AppDialer()),
+		tlsclient.WithDialer(dnsdial.AppDialer(cfg.DNSMode)),
 	)
 	if err != nil {
 		return "", "", "", fmt.Errorf("failed to initialize tls_client: %w", err)
@@ -347,8 +348,8 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	data = fmt.Sprintf("vk_join_link=https://vk.com/call/join/%s&name=%s&access_token=%s", link, escapedName, token1)
 	urlAddr := fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousToken?v=5.275&client_id=%s", creds.ClientID)
 
-	chain := captcha.BuildChain(appstate.ManualCaptcha, appstate.AutoCaptchaSliderPOC)
-	deps := captcha.SolveDeps{Client: client, Profile: profile, StreamID: streamID}
+	chain := captcha.BuildChain(cfg.ManualCaptcha, cfg.AutoCaptchaSliderPOC)
+	deps := captcha.SolveDeps{Client: client, Profile: profile, StreamID: streamID, Cfg: cfg}
 
 	exhausted := func() error {
 		// Engage global lockout to protect API
@@ -452,7 +453,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	if !ok || len(urlsRaw) == 0 {
 		return "", "", "", fmt.Errorf("missing or empty urls in turn_server")
 	}
-	if appstate.Debug {
+	if cfg.Debug {
 		log.Printf("[STREAM %d] [VK Auth] turn_server urls: %v", streamID, urlsRaw)
 	}
 	urlIdx := streamID % len(urlsRaw)
@@ -460,7 +461,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 	if !ok {
 		return "", "", "", fmt.Errorf("turn server url[%d] is not a string", urlIdx)
 	}
-	if appstate.Debug {
+	if cfg.Debug {
 		log.Printf("[STREAM %d] [VK Auth] picked turn url[%d]: %s", streamID, urlIdx, urlStr)
 	}
 

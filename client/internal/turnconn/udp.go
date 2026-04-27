@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appcfg"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dispatcher"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/netadapt"
@@ -152,6 +153,7 @@ type Params struct {
 	Link     string
 	UDP      bool
 	GetCreds GetCredsFunc
+	Cfg      *appcfg.Config
 }
 
 func oneTurnConnection(ctx context.Context, params *Params, peer *net.UDPAddr, conn2 net.PacketConn, streamID int, c chan<- error) {
@@ -208,13 +210,13 @@ func oneTurnConnection(ctx context.Context, params *Params, peer *net.UDPAddr, c
 			err = fmt.Errorf("failed to connect to TURN server: %s", err2)
 			return
 		}
-		if appstate.Debug {
+		if params.Cfg.Debug {
 			log.Printf("[STREAM %d] [TURN] tcp established %s -> %s",
 				streamID, conn.LocalAddr(), conn.RemoteAddr())
 		}
 		cc := &netadapt.CountingConn{Conn: conn}
 		defer func() {
-			if err != nil && appstate.Debug {
+			if err != nil && params.Cfg.Debug {
 				log.Printf("[STREAM %d] [TURN] tcp closing after fail: written=%d read=%d",
 					streamID, cc.BytesWritten.Load(), cc.BytesRead.Load())
 			}
@@ -276,7 +278,7 @@ func oneTurnConnection(ctx context.Context, params *Params, peer *net.UDPAddr, c
 		}
 	}()
 
-	if appstate.Debug {
+	if params.Cfg.Debug {
 		log.Printf("[STREAM %d] relayed-address=%s", streamID, relayConn.LocalAddr().String())
 	}
 
@@ -394,8 +396,8 @@ func TurnConnectionLoop(ctx context.Context, params *Params, peer *net.UDPAddr, 
 			if err := <-c; err != nil {
 				if strings.Contains(err.Error(), "FATAL_CAPTCHA") {
 					log.Printf("[STREAM %d] Fatal manual captcha error. Shutting down application.", streamID)
-					if appstate.GlobalAppCancel != nil {
-						appstate.GlobalAppCancel()
+					if params.Cfg.AppCancel != nil {
+						params.Cfg.AppCancel()
 					}
 					return
 				}

@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
 
 package main
@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appcfg"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dispatcher"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dnsdial"
@@ -25,7 +26,6 @@ import (
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	appstate.GlobalAppCancel = cancel
 	defer cancel()
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGTERM, syscall.SIGINT)
@@ -59,12 +59,20 @@ func main() {
 	flag.Parse()
 	switch *dnsFlag {
 	case dnsdial.DNSModeUDP, dnsdial.DNSModeDoH, dnsdial.DNSModeAuto:
-		dnsdial.Mode = *dnsFlag
 	default:
 		log.Panicf("invalid -dns value %q (expected udp|doh|auto)", *dnsFlag)
 	}
-	log.Printf("[DNS] mode=%s", dnsdial.Mode)
-	dnsdial.InstallGlobalResolver()
+
+	cfg := &appcfg.Config{
+		Debug:                *debugFlag,
+		ManualCaptcha:        *manualCaptchaFlag,
+		AutoCaptchaSliderPOC: !*manualCaptchaFlag,
+		DNSMode:              *dnsFlag,
+		AppCancel:            cancel,
+	}
+
+	log.Printf("[DNS] mode=%s", cfg.DNSMode)
+	dnsdial.InstallGlobalResolver(cfg.DNSMode)
 	if *peerAddr == "" {
 		log.Panicf("Need peer address!")
 	}
@@ -76,10 +84,6 @@ func main() {
 		log.Panicf("Need either vk-link or yandex-link!")
 	}
 
-	appstate.Debug = *debugFlag
-	appstate.ManualCaptcha = *manualCaptchaFlag
-	appstate.AutoCaptchaSliderPOC = !appstate.ManualCaptcha
-
 	var link string
 	var getCreds turnconn.GetCredsFunc
 	if *vklink != "" {
@@ -87,7 +91,7 @@ func main() {
 		link = parts[len(parts)-1]
 
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
-			return vkauth.GetCredsCached(ctx, s, streamID)
+			return vkauth.GetCredsCached(ctx, s, streamID, cfg)
 		}
 		if *n <= 0 {
 			*n = 10
@@ -96,7 +100,7 @@ func main() {
 		parts := strings.Split(*yalink, "j/")
 		link = parts[len(parts)-1]
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
-			return yandexauth.GetCreds(s)
+			return yandexauth.GetCreds(s, cfg)
 		}
 		if *n <= 0 {
 			*n = 1
@@ -112,6 +116,7 @@ func main() {
 		Link:     link,
 		UDP:      *udp,
 		GetCreds: getCreds,
+		Cfg:      cfg,
 	}
 
 	if *vlessMode {

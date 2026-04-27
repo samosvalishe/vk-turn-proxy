@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/ishlisten"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/netadapt"
 	"github.com/cacggghp/vk-turn-proxy/tcputil"
@@ -141,7 +140,7 @@ func RunVLESSMode(ctx context.Context, tp *Params, peer *net.UDPAddr, listenAddr
 				return
 			}
 			defer func() { _ = stream.Close() }()
-			pipe(ctx, tc, stream)
+			pipe(ctx, tc, stream, tp.Cfg.Debug)
 		}(tcpConn, sess)
 	}
 }
@@ -329,7 +328,7 @@ func createSmuxSession(ctx context.Context, tp *Params, peer *net.UDPAddr, id in
 }
 
 // pipe copies data bidirectionally between two connections.
-func pipe(ctx context.Context, c1, c2 net.Conn) {
+func pipe(ctx context.Context, c1, c2 net.Conn, debug bool) {
 	ctx2, cancel := context.WithCancel(ctx)
 	context.AfterFunc(ctx2, func() {
 		if err := c1.SetDeadline(time.Now()); err != nil {
@@ -346,7 +345,7 @@ func pipe(ctx context.Context, c1, c2 net.Conn) {
 		defer wg.Done()
 		defer cancel()
 		if _, err := io.Copy(c1, c2); err != nil {
-			if appstate.Debug {
+			if debug {
 				log.Printf("pipe: c1<-c2 copy error: %v", err)
 			}
 		}
@@ -355,19 +354,19 @@ func pipe(ctx context.Context, c1, c2 net.Conn) {
 		defer wg.Done()
 		defer cancel()
 		if _, err := io.Copy(c2, c1); err != nil {
-			if appstate.Debug {
+			if debug {
 				log.Printf("pipe: c2<-c1 copy error: %v", err)
 			}
 		}
 	}()
 	wg.Wait()
 	if err := c1.SetDeadline(time.Time{}); err != nil {
-		if appstate.Debug {
+		if debug {
 			log.Printf("pipe: failed to reset deadline c1: %v", err)
 		}
 	}
 	if err := c2.SetDeadline(time.Time{}); err != nil {
-		if appstate.Debug {
+		if debug {
 			log.Printf("pipe: failed to reset deadline c2: %v", err)
 		}
 	}

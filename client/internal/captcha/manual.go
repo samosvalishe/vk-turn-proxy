@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cacggghp/vk-turn-proxy/client/internal/appstate"
+	"github.com/cacggghp/vk-turn-proxy/client/internal/appcfg"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/dnsdial"
 	"github.com/cacggghp/vk-turn-proxy/client/internal/ishlisten"
 	prof "github.com/cacggghp/vk-turn-proxy/client/internal/profile"
@@ -517,8 +517,8 @@ func rewriteCaptchaHTML(html string, targetURL *neturl.URL) string {
 	}
 }
 
-func newCaptchaProxyTransport() *http.Transport {
-	d := dnsdial.AppDialer()
+func newCaptchaProxyTransport(cfg *appcfg.Config) *http.Transport {
+	d := dnsdial.AppDialer(cfg.DNSMode)
 	return &http.Transport{
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   100,
@@ -634,7 +634,8 @@ button{font-size:24px;padding:12px 32px;margin-top:12px;cursor:pointer}</style>
 }
 
 type loggingTransport struct {
-	rt http.RoundTripper
+	rt    http.RoundTripper
+	debug bool
 }
 
 func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -648,7 +649,7 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 		req.Body = io.NopCloser(bytes.NewReader(b))
 
-		if appstate.Debug {
+		if t.debug {
 			log.Printf("[Captcha Proxy] Real browser sent %s data: %s", req.URL.Path, redactBodyForLog(string(b)))
 			for k, v := range req.Header {
 				log.Printf("[Captcha Proxy] Header (%s): %s = %s", req.URL.Path, k, redactHeaderForLog(k, strings.Join(v, ", ")))
@@ -709,7 +710,7 @@ func isAllowedGenericProxyHost(host string) bool {
 	return false
 }
 
-func SolveViaProxy(redirectURI string) (string, error) {
+func SolveViaProxy(redirectURI string, cfg *appcfg.Config) (string, error) {
 	keyCh := make(chan string, 1)
 
 	targetURL, err := neturl.Parse(redirectURI)
@@ -717,7 +718,7 @@ func SolveViaProxy(redirectURI string) (string, error) {
 		return "", fmt.Errorf("invalid redirect URI: %v", err)
 	}
 
-	transport := &loggingTransport{rt: newCaptchaProxyTransport()}
+	transport := &loggingTransport{rt: newCaptchaProxyTransport(cfg), debug: cfg.Debug}
 
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
@@ -746,7 +747,7 @@ func SolveViaProxy(redirectURI string) (string, error) {
 
 			contentType := res.Header.Get("Content-Type")
 			contentEncoding := res.Header.Get("Content-Encoding")
-			if appstate.Debug {
+			if cfg.Debug {
 				log.Printf("[Captcha Proxy] %s %d | Content-Type: %q, Encoding: %q", res.Request.Method, res.StatusCode, contentType, contentEncoding)
 			}
 
