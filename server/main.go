@@ -128,9 +128,14 @@ func main() {
 	}
 }
 
+type dtlsConnWrapper struct {
+	conn net.Conn
+	tx   chan []byte
+}
+
 type dtlsPool struct {
 	mu     sync.RWMutex
-	conns  []net.Conn
+	conns  []*dtlsConnWrapper
 	idx    uint64
 	server *net.UDPConn
 }
@@ -169,14 +174,18 @@ func newDtlsPool(ctx context.Context, connectAddr string) *dtlsPool {
 					continue
 				}
 				log.Printf("dtlsPool backend read err: %v", err)
-				time.Sleep(1 * time.Second)
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
 			c := p.pick()
 			if c != nil {
-				if err := c.SetWriteDeadline(time.Now().Add(time.Second * 5)); err == nil {
-					_, _ = c.Write(buf[:n])
+				pkt := make([]byte, n)
+				copy(pkt, buf[:n])
+				select {
+				case c.tx <- pkt:
+				default:
+					// Drop packet if DTLS connection is congested (mimics network loss)
 				}
 			}
 		}
@@ -185,7 +194,7 @@ func newDtlsPool(ctx context.Context, connectAddr string) *dtlsPool {
 	return p
 }
 
-func (p *dtlsPool) pick() net.Conn {
+func (p *dtlsPool) pick() *dtlsConnWrapper {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	n := uint64(len(p.conns))
@@ -197,14 +206,19 @@ func (p *dtlsPool) pick() net.Conn {
 }
 
 func (p *dtlsPool) handleConn(ctx context.Context, conn net.Conn) {
+	w := &dtlsConnWrapper{
+		conn: conn,
+		tx:   make(chan []byte, 128),
+	}
+
 	p.mu.Lock()
-	p.conns = append(p.conns, conn)
+	p.conns = append(p.conns, w)
 	p.mu.Unlock()
 
 	defer func() {
 		p.mu.Lock()
 		for i, c := range p.conns {
-			if c == conn {
+			if c == w {
 				p.conns = append(p.conns[:i], p.conns[i+1:]...)
 				break
 			}
@@ -218,6 +232,24 @@ func (p *dtlsPool) handleConn(ctx context.Context, conn net.Conn) {
 		_ = conn.SetDeadline(time.Now()) //nolint:errcheck
 	})
 
+	// Writer goroutine (sends inbound WG packets back through DTLS)
+	go func() {
+		defer cancel2()
+		for {
+			select {
+			case <-ctx2.Done():
+				return
+			case pkt := <-w.tx:
+				if err := conn.SetWriteDeadline(time.Now().Add(time.Second * 5)); err == nil {
+					if _, err := conn.Write(pkt); err != nil {
+						return // Stop on write error
+					}
+				}
+			}
+		}
+	}()
+
+	// Reader loop (receives outbound DTLS packets and sends to WG backend)
 	buf := make([]byte, 1600)
 	for {
 		select {
@@ -237,10 +269,11 @@ func (p *dtlsPool) handleConn(ctx context.Context, conn net.Conn) {
 			return
 		}
 
-		if err := p.server.SetWriteDeadline(time.Now().Add(time.Second * 5)); err == nil {
-			if _, err = p.server.Write(buf[:n]); err != nil {
-				log.Printf("server Write err: %v", err)
-			}
+		// Write to shared WireGuard connection.
+		// UDP Write is non-blocking, no need for concurrent SetWriteDeadline calls
+		// which previously caused data races and immediate timeouts on the shared socket.
+		if _, err = p.server.Write(buf[:n]); err != nil {
+			log.Printf("server Write err: %v", err)
 		}
 	}
 }
