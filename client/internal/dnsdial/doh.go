@@ -322,7 +322,7 @@ func (r *DohResolver) postWire(ctx context.Context, ep DohEndpoint, query []byte
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body) //nolint:errcheck
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, dohMaxResponseBytes))
@@ -469,7 +469,7 @@ func (f *dohForwarder) serveTCP(ln *net.TCPListener, r *DohResolver) {
 func handleDohForwarderTCP(conn net.Conn, r *DohResolver) {
 	defer func() { _ = conn.Close() }()
 	for {
-		_ = conn.SetReadDeadline(time.Now().Add(forwarderTCPReadDL))
+		_ = conn.SetReadDeadline(time.Now().Add(forwarderTCPReadDL)) //nolint:errcheck
 		var lenBuf [2]byte
 		if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
 			return
@@ -494,7 +494,7 @@ func handleDohForwarderTCP(conn net.Conn, r *DohResolver) {
 		out[0] = byte(len(resp) >> 8)
 		out[1] = byte(len(resp))
 		copy(out[2:], resp)
-		_ = conn.SetWriteDeadline(time.Now().Add(forwarderTCPWriteDL))
+		_ = conn.SetWriteDeadline(time.Now().Add(forwarderTCPWriteDL)) //nolint:errcheck
 		if _, err := conn.Write(out); err != nil {
 			return
 		}
@@ -634,7 +634,7 @@ func udpProbe(timeout time.Duration) bool {
 		if err != nil {
 			continue
 		}
-		_ = conn.SetDeadline(deadline)
+		_ = conn.SetDeadline(deadline) //nolint:errcheck
 		_, _ = conn.Write(wire)
 		n, err := conn.Read(buf)
 		_ = conn.Close()

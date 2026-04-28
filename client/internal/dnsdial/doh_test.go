@@ -69,7 +69,7 @@ func TestDohResolver_LookupIPAddr_Success(t *testing.T) {
 		body := readWire(t, r.Body)
 		w.Header().Set("Content-Type", "application/dns-message")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(dohAnswer(t, body, net.ParseIP("93.184.216.34"), 300))
+		_, _ = w.Write(dohAnswer(t, body, net.ParseIP("93.184.216.34"), 300)) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -105,7 +105,7 @@ func TestDohResolver_Fallback(t *testing.T) {
 		secondHits.Add(1)
 		body := readWire(t, r.Body)
 		w.Header().Set("Content-Type", "application/dns-message")
-		_, _ = w.Write(dohAnswer(t, body, net.ParseIP("1.2.3.4"), 300))
+		_, _ = w.Write(dohAnswer(t, body, net.ParseIP("1.2.3.4"), 300)) //nolint:errcheck
 	}))
 	defer second.Close()
 
@@ -134,7 +134,7 @@ func TestDohResolver_Cache(t *testing.T) {
 		hits.Add(1)
 		body := readWire(t, r.Body)
 		w.Header().Set("Content-Type", "application/dns-message")
-		_, _ = w.Write(dohAnswer(t, body, net.ParseIP("5.6.7.8"), 300))
+		_, _ = w.Write(dohAnswer(t, body, net.ParseIP("5.6.7.8"), 300)) //nolint:errcheck
 	}))
 	defer srv.Close()
 
@@ -159,7 +159,7 @@ func TestAutoDial_StickyAfterUDPFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := readWire(t, r.Body)
 		w.Header().Set("Content-Type", "application/dns-message")
-		_, _ = w.Write(dohAnswer(t, body, net.ParseIP("9.9.9.9"), 300))
+		_, _ = w.Write(dohAnswer(t, body, net.ParseIP("9.9.9.9"), 300)) //nolint:errcheck
 	}))
 	defer srv.Close()
 

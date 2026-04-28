@@ -233,7 +233,7 @@ func dialTurn(ctx context.Context, params *Params, turnServerAddr string, turnSe
 		return nil, fmt.Errorf("failed to create TURN client: %w", err)
 	}
 
-	if err := client.Listen(); err != nil {
+	if err = client.Listen(); err != nil {
 		client.Close()
 		_ = dialCloser.Close()
 		return nil, fmt.Errorf("failed to listen: %w", err)
@@ -340,7 +340,7 @@ func oneTurnConnection(ctx context.Context, params *Params, peer *net.UDPAddr, c
 		allocsMu.Lock()
 		for _, a := range allocs {
 			if a.relay != nil {
-				_ = a.relay.SetDeadline(time.Now())
+				_ = a.relay.SetDeadline(time.Now()) //nolint:errcheck
 			}
 		}
 		toClose := allocs
@@ -356,7 +356,7 @@ func oneTurnConnection(ctx context.Context, params *Params, peer *net.UDPAddr, c
 		defer allocsMu.Unlock()
 		for _, a := range allocs {
 			if a.relay != nil {
-				_ = a.relay.SetDeadline(time.Now())
+				_ = a.relay.SetDeadline(time.Now()) //nolint:errcheck
 			}
 		}
 	})

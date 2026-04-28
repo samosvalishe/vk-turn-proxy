@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	_ "image/jpeg"
+	_ "image/jpeg" // Register JPEG format
 	"io"
 	"log"
 	"math/rand"

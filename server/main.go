@@ -215,7 +215,7 @@ func (p *dtlsPool) handleConn(ctx context.Context, conn net.Conn) {
 	ctx2, cancel2 := context.WithCancel(ctx)
 	defer cancel2()
 	context.AfterFunc(ctx2, func() {
-		_ = conn.SetDeadline(time.Now())
+		_ = conn.SetDeadline(time.Now()) //nolint:errcheck
 	})
 
 	buf := make([]byte, 1600)
