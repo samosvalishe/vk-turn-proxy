@@ -24,6 +24,32 @@ import (
 	"github.com/cacggghp/vk-turn-proxy/client/internal/yandexauth"
 )
 
+// splitLinks splits a raw -vk-link / -yandex-link argument on commas/newlines,
+// trims each entry, normalizes via the join-prefix rule, and drops empties.
+// Single-link inputs pass through unchanged (one element list).
+func splitLinks(raw, joinPrefix string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		segs := strings.Split(p, joinPrefix)
+		link := segs[len(segs)-1]
+		if idx := strings.IndexAny(link, "/?#"); idx != -1 {
+			link = link[:idx]
+		}
+		if link == "" {
+			continue
+		}
+		out = append(out, link)
+	}
+	return out
+}
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -87,21 +113,25 @@ func main() {
 		log.Panicf("Need either vk-link or yandex-link!")
 	}
 
-	var link string
+	var links []string
 	var getCreds turnconn.GetCredsFunc
 	if *vklink != "" {
-		parts := strings.Split(*vklink, "join/")
-		link = parts[len(parts)-1]
-
+		links = splitLinks(*vklink, "join/")
+		if len(links) == 0 {
+			log.Panicf("vk-link is empty after parsing")
+		}
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
 			return vkauth.GetCredsCached(ctx, s, streamID, cfg)
 		}
 		if *n <= 0 {
 			*n = 10
 		}
+		log.Printf("[VK] using %d call link(s)", len(links))
 	} else {
-		parts := strings.Split(*yalink, "j/")
-		link = parts[len(parts)-1]
+		links = splitLinks(*yalink, "j/")
+		if len(links) == 0 {
+			log.Panicf("yandex-link is empty after parsing")
+		}
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
 			return yandexauth.GetCreds(s, cfg)
 		}
@@ -109,14 +139,11 @@ func main() {
 			*n = 1
 		}
 	}
-	if idx := strings.IndexAny(link, "/?#"); idx != -1 {
-		link = link[:idx]
-	}
 
 	params := &turnconn.Params{
 		Host:     *host,
 		Port:     *port,
-		Link:     link,
+		Links:    links,
 		UDP:      *udp,
 		GetCreds: getCreds,
 		Cfg:      cfg,

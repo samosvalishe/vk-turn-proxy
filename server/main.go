@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -50,6 +51,11 @@ func main() {
 	//
 	// Everything below is the pion-DTLS API! Thanks for using it ❤️.
 	//
+
+	var pool *dtlsPool
+	if !*vlessMode {
+		pool = newDtlsPool(ctx, *connect)
+	}
 
 	// Connect to a DTLS server
 	listener, err := dtls.ListenWithOptions(
@@ -114,7 +120,7 @@ func main() {
 			if *vlessMode {
 				handleVLESSConnection(ctx, dtlsConn, *connect)
 			} else {
-				handleUDPConnection(ctx, conn, *connect)
+				pool.handleConn(ctx, dtlsConn)
 			}
 
 			log.Printf("Connection closed: %s\n", conn.RemoteAddr())
@@ -122,91 +128,119 @@ func main() {
 	}
 }
 
-// handleUDPConnection forwards DTLS packets to a UDP backend (WireGuard).
-func handleUDPConnection(ctx context.Context, conn net.Conn, connectAddr string) {
-	serverConn, err := net.Dial("udp", connectAddr)
+type dtlsPool struct {
+	mu     sync.RWMutex
+	conns  []net.Conn
+	idx    uint64
+	server *net.UDPConn
+}
+
+func newDtlsPool(ctx context.Context, connectAddr string) *dtlsPool {
+	serverAddr, err := net.ResolveUDPAddr("udp", connectAddr)
 	if err != nil {
-		log.Println(err)
-		return
+		log.Panicf("Failed to resolve backend address: %v", err)
 	}
+	serverConn, err := net.DialUDP("udp", nil, serverAddr)
+	if err != nil {
+		log.Panicf("Failed to connect to backend: %v", err)
+	}
+
+	p := &dtlsPool{
+		server: serverConn,
+	}
+
+	go func() {
+		buf := make([]byte, 1600)
+		for {
+			select {
+			case <-ctx.Done():
+				_ = serverConn.Close()
+				return
+			default:
+			}
+
+			if err := serverConn.SetReadDeadline(time.Now().Add(time.Second * 5)); err != nil {
+				continue
+			}
+
+			n, err := serverConn.Read(buf)
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue
+				}
+				log.Printf("dtlsPool backend read err: %v", err)
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			c := p.pick()
+			if c != nil {
+				if err := c.SetWriteDeadline(time.Now().Add(time.Second * 5)); err == nil {
+					_, _ = c.Write(buf[:n])
+				}
+			}
+		}
+	}()
+
+	return p
+}
+
+func (p *dtlsPool) pick() net.Conn {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	n := uint64(len(p.conns))
+	if n == 0 {
+		return nil
+	}
+	i := atomic.AddUint64(&p.idx, 1) - 1
+	return p.conns[i%n]
+}
+
+func (p *dtlsPool) handleConn(ctx context.Context, conn net.Conn) {
+	p.mu.Lock()
+	p.conns = append(p.conns, conn)
+	p.mu.Unlock()
+
 	defer func() {
-		if err = serverConn.Close(); err != nil {
-			log.Printf("failed to close outgoing connection: %s", err)
+		p.mu.Lock()
+		for i, c := range p.conns {
+			if c == conn {
+				p.conns = append(p.conns[:i], p.conns[i+1:]...)
+				break
+			}
 		}
+		p.mu.Unlock()
 	}()
 
-	var wg sync.WaitGroup
-	wg.Add(2)
 	ctx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
 	context.AfterFunc(ctx2, func() {
-		if err := conn.SetDeadline(time.Now()); err != nil {
-			log.Printf("failed to set incoming deadline: %s", err)
-		}
-		if err := serverConn.SetDeadline(time.Now()); err != nil {
-			log.Printf("failed to set outgoing deadline: %s", err)
-		}
+		_ = conn.SetDeadline(time.Now())
 	})
-	go func() {
-		defer wg.Done()
-		defer cancel2()
-		buf := make([]byte, 1600)
-		for {
-			select {
-			case <-ctx2.Done():
-				return
-			default:
-			}
-			if err1 := conn.SetReadDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
-			}
-			n, err1 := conn.Read(buf)
-			if err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
-			}
 
-			if err1 = serverConn.SetWriteDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
-			}
-			_, err1 = serverConn.Write(buf[:n])
-			if err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
+	buf := make([]byte, 1600)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		if err := conn.SetReadDeadline(time.Now().Add(time.Minute * 30)); err != nil {
+			log.Printf("conn SetReadDeadline err: %v", err)
+			return
+		}
+
+		n, err := conn.Read(buf)
+		if err != nil {
+			log.Printf("conn Read err: %v", err)
+			return
+		}
+
+		if err := p.server.SetWriteDeadline(time.Now().Add(time.Second * 5)); err == nil {
+			if _, err = p.server.Write(buf[:n]); err != nil {
+				log.Printf("server Write err: %v", err)
 			}
 		}
-	}()
-	go func() {
-		defer wg.Done()
-		defer cancel2()
-		buf := make([]byte, 1600)
-		for {
-			select {
-			case <-ctx2.Done():
-				return
-			default:
-			}
-			if err1 := serverConn.SetReadDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
-			}
-			n, err1 := serverConn.Read(buf)
-			if err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
-			}
-
-			if err1 = conn.SetWriteDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
-			}
-			_, err1 = conn.Write(buf[:n])
-			if err1 != nil {
-				log.Printf("Failed: %s", err1)
-				return
-			}
-		}
-	}()
-	wg.Wait()
+	}
 }

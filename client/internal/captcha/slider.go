@@ -21,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	prof "github.com/cacggghp/vk-turn-proxy/client/internal/profile"
 	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/bogdanfinn/tls-client"
+	prof "github.com/cacggghp/vk-turn-proxy/client/internal/profile"
 )
 
 const (

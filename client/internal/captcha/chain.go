@@ -107,8 +107,8 @@ func (a autoSolver) Solve(ctx context.Context, captchaErr *VkCaptchaError, deps 
 
 type manualSolver struct{}
 
-func (manualSolver) Mode() SolveMode  { return SolveModeManual }
-func (manualSolver) Label() string    { return "manual captcha" }
+func (manualSolver) Mode() SolveMode { return SolveModeManual }
+func (manualSolver) Label() string   { return "manual captcha" }
 
 const manualCaptchaTimeout = 3 * time.Minute
 

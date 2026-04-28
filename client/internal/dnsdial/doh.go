@@ -25,10 +25,10 @@ import (
 )
 
 const (
-	dohQueryTimeout     = 6 * time.Second
+	dohQueryTimeout = 6 * time.Second
 	// Total budget across all endpoint attempts in forwardRaw. Must be a
 	// multiple of dohQueryTimeout to give every fallback a real chance.
-	dohForwardBudget = 25 * time.Second
+	dohForwardBudget    = 25 * time.Second
 	dohCacheMinTTL      = 10 * time.Second
 	dohCacheMaxTTL      = 1 * time.Hour
 	dohMaxResponseBytes = 64 * 1024
