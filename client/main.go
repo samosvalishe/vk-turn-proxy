@@ -227,24 +227,13 @@ func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
 	req.Header.Set("DNT", "1")
 }
 
+// generateBrowserFp produces a stable fallback fingerprint when no SavedProfile
+// is available. Stable (no time component) so the value matches between
+// componentDone and check inside the same auto-solve attempt.
 func generateBrowserFp(profile Profile) string {
-	data := profile.UserAgent + profile.SecChUa + "1920x1080x24" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	data := profile.UserAgent + profile.SecChUa + "1536x864x24"
 	h := md5.Sum([]byte(data))
 	return hex.EncodeToString(h[:])
-}
-
-func generateFakeCursor() string {
-	startX := 600 + rand.Intn(400)
-	startY := 300 + rand.Intn(200)
-	startTime := time.Now().UnixMilli() - int64(rand.Intn(2000)+1000)
-	var points []string
-	for i := 0; i < 15+rand.Intn(10); i++ {
-		startX += rand.Intn(15) - 5
-		startY += rand.Intn(15) + 2
-		startTime += int64(rand.Intn(40) + 10)
-		points = append(points, fmt.Sprintf(`{"x":%d,"y":%d,"t":%d}`, startX, startY, startTime))
-	}
-	return "[" + strings.Join(points, ",") + "]"
 }
 
 // dnsMode is set in main() from the -dns flag and consumed by appDialer().
@@ -392,6 +381,16 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 		return "", fmt.Errorf("no redirect_uri for auto-solve")
 	}
 
+	// Reuse the real-browser fingerprint captured during a prior manual solve.
+	// VK fingerprints (browser_fp, device, UA) together; keeping them consistent
+	// across runs helps the auto path stay out of the BOT bucket.
+	var savedProfile *SavedProfile
+	if sp, err := LoadProfileFromDisk(); err == nil {
+		log.Printf("[STREAM %d] [Captcha] Using saved real browser profile", streamID)
+		savedProfile = sp
+		profile = sp.Profile
+	}
+
 	bootstrap, err := fetchCaptchaBootstrap(ctx, captchaErr.RedirectURI, client, profile)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch captcha bootstrap: %w", err)
@@ -399,7 +398,10 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 
 	log.Printf("[STREAM %d] [Captcha] PoW input: %s, difficulty: %d", streamID, bootstrap.PowInput, bootstrap.Difficulty)
 
-	hash := solvePoW(bootstrap.PowInput, bootstrap.Difficulty)
+	hash, err := solvePoW(bootstrap.PowInput, bootstrap.Difficulty)
+	if err != nil {
+		return "", fmt.Errorf("PoW: %w", err)
+	}
 	log.Printf("[STREAM %d] [Captcha] PoW solved: hash=%s", streamID, hash)
 
 	var successToken string
@@ -412,9 +414,10 @@ func solveVkCaptcha(ctx context.Context, captchaErr *VkCaptchaError, streamID in
 			client,
 			profile,
 			bootstrap.Settings,
+			savedProfile,
 		)
 	} else {
-		successToken, err = callCaptchaNotRobot(ctx, captchaErr.SessionToken, hash, streamID, client, profile)
+		successToken, err = callCaptchaNotRobot(ctx, captchaErr.SessionToken, hash, streamID, client, profile, savedProfile)
 	}
 	if err != nil {
 		return "", fmt.Errorf("captchaNotRobot API failed: %w", err)
@@ -458,20 +461,20 @@ func fetchCaptchaBootstrap(ctx context.Context, redirectURI string, client tlscl
 	return parseCaptchaBootstrapHTML(string(body))
 }
 
-func solvePoW(powInput string, difficulty int) string {
+func solvePoW(powInput string, difficulty int) (string, error) {
 	target := strings.Repeat("0", difficulty)
 	for nonce := 1; nonce <= 10000000; nonce++ {
 		data := powInput + strconv.Itoa(nonce)
 		hash := sha256.Sum256([]byte(data))
 		hexHash := hex.EncodeToString(hash[:])
 		if strings.HasPrefix(hexHash, target) {
-			return hexHash
+			return hexHash, nil
 		}
 	}
-	return ""
+	return "", fmt.Errorf("PoW unsolved (difficulty=%d, tried 10M nonces)", difficulty)
 }
 
-func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamID int, client tlsclient.HttpClient, profile Profile) (string, error) {
+func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamID int, client tlsclient.HttpClient, profile Profile, savedProfile *SavedProfile) (string, error) {
 	vkReq := func(method string, postData string) (map[string]interface{}, error) {
 		reqURL := "https://api.vk.ru/method/" + method + "?v=5.131"
 		parsedURL, err := neturl.Parse(reqURL)
@@ -489,13 +492,11 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 		applyBrowserProfileFhttp(req, profile)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Origin", "https://id.vk.ru")
-		req.Header.Set("Referer", "https://id.vk.ru/")
-		req.Header.Set("Sec-Fetch-Site", "same-site")
+		req.Header.Set("Origin", "https://api.vk.ru")
+		req.Header.Set("Referer", fmt.Sprintf("https://api.vk.ru/not_robot_captcha?domain=vk.com&session_token=%s&variant=popup&blank=1", sessionToken))
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
-		req.Header.Set("Sec-GPC", "1")
-		req.Header.Set("Priority", "u=1, i")
 
 		httpResp, err := client.Do(req)
 		if err != nil {
@@ -516,7 +517,14 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 		return resp, nil
 	}
 
-	baseParams := fmt.Sprintf("session_token=%s&domain=vk.com&adFp=&access_token=", neturl.QueryEscape(sessionToken))
+	// Per-session adFp: a stable empty value is itself a fingerprint.
+	adFpBytes := make([]byte, 16)
+	for i := range adFpBytes {
+		adFpBytes[i] = byte(rand.Intn(256))
+	}
+	adFp := base64.RawURLEncoding.EncodeToString(adFpBytes)[:21]
+
+	baseParams := fmt.Sprintf("session_token=%s&domain=vk.com&adFp=%s&access_token=", neturl.QueryEscape(sessionToken), neturl.QueryEscape(adFp))
 
 	log.Printf("[STREAM %d] [Captcha] Step 1/4: settings", streamID)
 	if _, err := vkReq("captchaNotRobot.settings", baseParams); err != nil {
@@ -528,6 +536,10 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 	log.Printf("[STREAM %d] [Captcha] Step 2/4: componentDone", streamID)
 	browserFp := generateBrowserFp(profile)
 	deviceJSON := buildCaptchaDeviceJSON(profile)
+	if savedProfile != nil {
+		browserFp = savedProfile.BrowserFp
+		deviceJSON = savedProfile.DeviceJSON
+	}
 	componentDoneData := baseParams + fmt.Sprintf("&browser_fp=%s&device=%s", browserFp, neturl.QueryEscape(deviceJSON))
 
 	if _, err := vkReq("captchaNotRobot.componentDone", componentDoneData); err != nil {
@@ -537,15 +549,31 @@ func callCaptchaNotRobot(ctx context.Context, sessionToken, hash string, streamI
 	time.Sleep(200 * time.Millisecond)
 
 	log.Printf("[STREAM %d] [Captcha] Step 3/4: check", streamID)
-	cursorJSON := generateFakeCursor()
+	// Real browser sends [] for cursor on the first check.
+	cursorJSON := "[]"
 	answer := base64.StdEncoding.EncodeToString([]byte("{}"))
 
-	// Dynamically generate debug_info to avoid static fingerprint bans
-	debugInfoBytes := md5.Sum([]byte(profile.UserAgent + strconv.FormatInt(time.Now().UnixNano(), 10)))
+	// debug_info must vary per-session — a hardcoded hash becomes a stable
+	// fingerprint VK uses to flag the bot path (status=BOT).
+	debugInfoBytes := sha256.Sum256([]byte(profile.UserAgent + sessionToken + strconv.FormatInt(time.Now().UnixNano(), 10)))
 	debugInfo := hex.EncodeToString(debugInfoBytes[:])
 
-	connectionRtt := "[50,50,50,50,50,50,50,50,50,50]"
-	connectionDownlink := "[9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5,9.5]"
+	// Realistic per-session jitter; static arrays were also a fingerprint.
+	rttSamples := 4 + rand.Intn(4)
+	rttBase := 40 + rand.Intn(120)
+	rttVals := make([]string, rttSamples)
+	for i := range rttVals {
+		rttVals[i] = strconv.Itoa(rttBase + rand.Intn(40) - 20)
+	}
+	connectionRtt := "[" + strings.Join(rttVals, ",") + "]"
+
+	dlSamples := 4 + rand.Intn(4)
+	dlBase := 2.0 + rand.Float64()*8.0
+	dlVals := make([]string, dlSamples)
+	for i := range dlVals {
+		dlVals[i] = strconv.FormatFloat(dlBase+(rand.Float64()-0.5)*0.4, 'f', 2, 64)
+	}
+	connectionDownlink := "[" + strings.Join(dlVals, ",") + "]"
 
 	checkData := baseParams + fmt.Sprintf(
 		"&accelerometer=%s&gyroscope=%s&motion=%s&cursor=%s&taps=%s&connectionRtt=%s&connectionDownlink=%s&browser_fp=%s&hash=%s&answer=%s&debug_info=%s",
@@ -955,7 +983,9 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 					}
 				case captchaSolveModeManual:
 					log.Printf("[STREAM %d] [Captcha] Triggering manual captcha fallback...", streamID)
-					manualCtx, manualCancel := context.WithTimeout(ctx, 60*time.Second)
+					// Manual solve waits on a human; keep generous timeout
+					// independent of any auth-level deadline.
+					manualCtx, manualCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 
 					type manualRes struct {
 						token string
@@ -979,11 +1009,20 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 
 					select {
 					case res := <-resCh:
-						successToken = res.token
-						captchaKey = res.key
-						solveErr = res.err
+						// Token can arrive even when err != nil (e.g. server
+						// Shutdown timeout after the token was already received).
+						// A non-empty token/key counts as success.
+						if res.token != "" || res.key != "" {
+							successToken = res.token
+							captchaKey = res.key
+							if res.err != nil {
+								log.Printf("[STREAM %d] [Captcha] Token received (ignoring cleanup error: %v)", streamID, res.err)
+							}
+						} else {
+							solveErr = res.err
+						}
 					case <-manualCtx.Done():
-						solveErr = fmt.Errorf("manual captcha timed out after 60s")
+						solveErr = fmt.Errorf("manual captcha timed out after 3m")
 					}
 					manualCancel()
 				}
