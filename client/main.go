@@ -24,30 +24,14 @@ import (
 	"github.com/cacggghp/vk-turn-proxy/client/internal/yandexauth"
 )
 
-// splitLinks splits a raw -vk-link / -yandex-link argument on commas/newlines,
-// trims each entry, normalizes via the join-prefix rule, and drops empties.
-// Single-link inputs pass through unchanged (one element list).
-func splitLinks(raw, joinPrefix string) []string {
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == '\n' || r == '\r'
-	})
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		segs := strings.Split(p, joinPrefix)
-		link := segs[len(segs)-1]
-		if idx := strings.IndexAny(link, "/?#"); idx != -1 {
-			link = link[:idx]
-		}
-		if link == "" {
-			continue
-		}
-		out = append(out, link)
+func extractToken(raw, joinPrefix string) string {
+	raw = strings.TrimSpace(raw)
+	segs := strings.Split(raw, joinPrefix)
+	token := segs[len(segs)-1]
+	if idx := strings.IndexAny(token, "/?#"); idx != -1 {
+		token = token[:idx]
 	}
-	return out
+	return token
 }
 
 func main() {
@@ -113,11 +97,11 @@ func main() {
 		log.Panicf("Need either vk-link or yandex-link!")
 	}
 
-	var links []string
+	var link string
 	var getCreds turnconn.GetCredsFunc
 	if *vklink != "" {
-		links = splitLinks(*vklink, "join/")
-		if len(links) == 0 {
+		link = extractToken(*vklink, "join/")
+		if link == "" {
 			log.Panicf("vk-link is empty after parsing")
 		}
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
@@ -126,10 +110,9 @@ func main() {
 		if *n <= 0 {
 			*n = 10
 		}
-		log.Printf("[VK] using %d call link(s)", len(links))
 	} else {
-		links = splitLinks(*yalink, "j/")
-		if len(links) == 0 {
+		link = extractToken(*yalink, "j/")
+		if link == "" {
 			log.Panicf("yandex-link is empty after parsing")
 		}
 		getCreds = func(ctx context.Context, s string, streamID int) (string, string, string, error) {
@@ -143,7 +126,7 @@ func main() {
 	params := &turnconn.Params{
 		Host:     *host,
 		Port:     *port,
-		Links:    links,
+		Link:     link,
 		UDP:      *udp,
 		GetCreds: getCreds,
 		Cfg:      cfg,

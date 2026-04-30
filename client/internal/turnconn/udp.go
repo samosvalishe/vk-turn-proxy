@@ -149,24 +149,10 @@ type GetCredsFunc func(ctx context.Context, link string, streamID int) (string, 
 type Params struct {
 	Host     string
 	Port     string
-	Links    []string
+	Link     string
 	UDP      bool
 	GetCreds GetCredsFunc
 	Cfg      *appcfg.Config
-	counter  atomic.Uint64
-}
-
-// PickLink chooses a link for given streamID via round-robin shard.
-// Empty Links → empty string (caller treats as misconfig).
-func (p *Params) PickLink(streamID int) string {
-	if len(p.Links) == 0 {
-		return ""
-	}
-	idx := int(p.counter.Add(1)-1) % len(p.Links)
-	if idx < 0 {
-		idx += len(p.Links)
-	}
-	return p.Links[idx]
 }
 
 // turnAllocation bundles a single TURN session: the dial socket, the TURN client,
@@ -277,7 +263,7 @@ func oneTurnConnection(ctx context.Context, params *Params, peer *net.UDPAddr, c
 	time.Sleep(time.Duration(rand.Intn(400)+100) * time.Millisecond)
 	var err error
 	defer func() { c <- err }()
-	user, pass, urlTarget, err1 := params.GetCreds(ctx, params.PickLink(streamID), streamID)
+	user, pass, urlTarget, err1 := params.GetCreds(ctx, params.Link, streamID)
 	if err1 != nil {
 		err = fmt.Errorf("failed to get TURN credentials: %s", err1)
 		return

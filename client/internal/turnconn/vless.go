@@ -201,7 +201,7 @@ func createSmuxSession(ctx context.Context, tp *Params, peer *net.UDPAddr, id in
 	}
 
 	// 1. Get TURN credentials
-	user, pass, rawURL, err := tp.GetCreds(ctx, tp.PickLink(id), id)
+	user, pass, rawURL, err := tp.GetCreds(ctx, tp.Link, id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get TURN creds: %w", err)
 	}

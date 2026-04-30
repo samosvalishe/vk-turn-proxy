@@ -4,17 +4,19 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/cacggghp/vk-turn-proxy/tcputil"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
+	"github.com/xtaci/smux"
 )
 
 func main() {
@@ -51,11 +53,6 @@ func main() {
 	//
 	// Everything below is the pion-DTLS API! Thanks for using it ❤️.
 	//
-
-	var pool *dtlsPool
-	if !*vlessMode {
-		pool = newDtlsPool(ctx, *connect)
-	}
 
 	// Connect to a DTLS server
 	listener, err := dtls.ListenWithOptions(
@@ -120,7 +117,7 @@ func main() {
 			if *vlessMode {
 				handleVLESSConnection(ctx, dtlsConn, *connect)
 			} else {
-				pool.handleConn(ctx, dtlsConn)
+				handleUDPConnection(ctx, conn, *connect)
 			}
 
 			log.Printf("Connection closed: %s\n", conn.RemoteAddr())
@@ -128,166 +125,200 @@ func main() {
 	}
 }
 
-type dtlsConnWrapper struct {
-	conn       net.Conn
-	tx         chan []byte
-	lastActive atomic.Int64
-}
-
-type dtlsPool struct {
-	mu     sync.RWMutex
-	conns  []*dtlsConnWrapper
-	idx    uint64
-	server *net.UDPConn
-}
-
-func newDtlsPool(ctx context.Context, connectAddr string) *dtlsPool {
-	serverAddr, err := net.ResolveUDPAddr("udp", connectAddr)
+// handleUDPConnection forwards DTLS packets to a UDP backend (WireGuard).
+func handleUDPConnection(ctx context.Context, conn net.Conn, connectAddr string) {
+	serverConn, err := net.Dial("udp", connectAddr)
 	if err != nil {
-		log.Panicf("Failed to resolve backend address: %v", err)
+		log.Println(err)
+		return
 	}
-	serverConn, err := net.DialUDP("udp", nil, serverAddr)
-	if err != nil {
-		log.Panicf("Failed to connect to backend: %v", err)
-	}
-
-	p := &dtlsPool{
-		server: serverConn,
-	}
-
-	go func() {
-		buf := make([]byte, 1600)
-		for {
-			select {
-			case <-ctx.Done():
-				_ = serverConn.Close()
-				return
-			default:
-			}
-
-			if err := serverConn.SetReadDeadline(time.Now().Add(time.Second * 5)); err != nil {
-				continue
-			}
-
-			n, err := serverConn.Read(buf)
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue
-				}
-				log.Printf("dtlsPool backend read err: %v", err)
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
-
-			c := p.pick()
-			if c != nil {
-				pkt := make([]byte, n)
-				copy(pkt, buf[:n])
-				select {
-				case c.tx <- pkt:
-				default:
-					// Drop packet if DTLS connection is congested (mimics network loss)
-				}
-			}
-		}
-	}()
-
-	return p
-}
-
-func (p *dtlsPool) pick() *dtlsConnWrapper {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	n := uint64(len(p.conns))
-	if n == 0 {
-		return nil
-	}
-
-	now := time.Now().Unix()
-	for attempts := 0; attempts < int(n); attempts++ {
-		i := atomic.AddUint64(&p.idx, 1) - 1
-		c := p.conns[i%n]
-		if now-c.lastActive.Load() < 60 {
-			return c
-		}
-	}
-
-	i := atomic.AddUint64(&p.idx, 1) - 1
-	return p.conns[i%n]
-}
-
-func (p *dtlsPool) handleConn(ctx context.Context, conn net.Conn) {
-	w := &dtlsConnWrapper{
-		conn: conn,
-		tx:   make(chan []byte, 128),
-	}
-	w.lastActive.Store(time.Now().Unix())
-
-	p.mu.Lock()
-	p.conns = append(p.conns, w)
-	p.mu.Unlock()
-
 	defer func() {
-		p.mu.Lock()
-		for i, c := range p.conns {
-			if c == w {
-				p.conns = append(p.conns[:i], p.conns[i+1:]...)
-				break
-			}
+		if err = serverConn.Close(); err != nil {
+			log.Printf("failed to close outgoing connection: %s", err)
 		}
-		p.mu.Unlock()
 	}()
 
+	var wg sync.WaitGroup
+	wg.Add(2)
 	ctx2, cancel2 := context.WithCancel(ctx)
-	defer cancel2()
 	context.AfterFunc(ctx2, func() {
-		_ = conn.SetDeadline(time.Now()) //nolint:errcheck
+		if err := conn.SetDeadline(time.Now()); err != nil {
+			log.Printf("failed to set incoming deadline: %s", err)
+		}
+		if err := serverConn.SetDeadline(time.Now()); err != nil {
+			log.Printf("failed to set outgoing deadline: %s", err)
+		}
 	})
-
-	// Writer goroutine (sends inbound WG packets back through DTLS).
-	// Deadline is governed by ctx2 (see context.AfterFunc above) — no per-packet
-	// SetWriteDeadline syscall is needed on the hot path.
 	go func() {
+		defer wg.Done()
 		defer cancel2()
+		buf := make([]byte, 1600)
 		for {
 			select {
 			case <-ctx2.Done():
 				return
-			case pkt := <-w.tx:
-				if _, err := conn.Write(pkt); err != nil {
-					return
-				}
-				w.lastActive.Store(time.Now().Unix())
+			default:
+			}
+			if err1 := conn.SetReadDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
+				log.Printf("Failed: %s", err1)
+				return
+			}
+			n, err1 := conn.Read(buf)
+			if err1 != nil {
+				log.Printf("Failed: %s", err1)
+				return
+			}
+
+			if err1 = serverConn.SetWriteDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
+				log.Printf("Failed: %s", err1)
+				return
+			}
+			_, err1 = serverConn.Write(buf[:n])
+			if err1 != nil {
+				log.Printf("Failed: %s", err1)
+				return
 			}
 		}
 	}()
+	go func() {
+		defer wg.Done()
+		defer cancel2()
+		buf := make([]byte, 1600)
+		for {
+			select {
+			case <-ctx2.Done():
+				return
+			default:
+			}
+			if err1 := serverConn.SetReadDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
+				log.Printf("Failed: %s", err1)
+				return
+			}
+			n, err1 := serverConn.Read(buf)
+			if err1 != nil {
+				log.Printf("Failed: %s", err1)
+				return
+			}
 
-	// Reader loop (receives outbound DTLS packets and sends to WG backend)
-	buf := make([]byte, 1600)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
+			if err1 = conn.SetWriteDeadline(time.Now().Add(time.Minute * 30)); err1 != nil {
+				log.Printf("Failed: %s", err1)
+				return
+			}
+			_, err1 = conn.Write(buf[:n])
+			if err1 != nil {
+				log.Printf("Failed: %s", err1)
+				return
+			}
 		}
+	}()
+	wg.Wait()
+}
 
-		if err := conn.SetReadDeadline(time.Now().Add(time.Minute * 2)); err != nil {
-			log.Printf("conn SetReadDeadline err: %v", err)
-			return
-		}
-
-		n, err := conn.Read(buf)
-		if err != nil {
-			log.Printf("conn Read err: %v", err)
-			return
-		}
-		w.lastActive.Store(time.Now().Unix())
-
-		// Write to shared WireGuard connection.
-		// UDP Write is non-blocking, no need for concurrent SetWriteDeadline calls
-		// which previously caused data races and immediate timeouts on the shared socket.
-		if _, err = p.server.Write(buf[:n]); err != nil {
-			log.Printf("server Write err: %v", err)
-		}
+// handleVLESSConnection creates a KCP+smux session over DTLS and forwards
+// each smux stream as a TCP connection to the backend (Xray/VLESS).
+func handleVLESSConnection(ctx context.Context, dtlsConn net.Conn, connectAddr string) {
+	// 1. Create KCP session over DTLS
+	kcpSess, err := tcputil.NewKCPOverDTLS(dtlsConn, true)
+	if err != nil {
+		log.Printf("KCP session error: %s", err)
+		return
 	}
+	defer func() {
+		if err := kcpSess.Close(); err != nil {
+			log.Printf("failed to close KCP session: %v", err)
+		}
+	}()
+	log.Printf("KCP session established (server)")
+
+	// 2. Create smux server session over KCP
+	smuxSess, err := smux.Server(kcpSess, tcputil.DefaultSmuxConfig())
+	if err != nil {
+		log.Printf("smux server error: %s", err)
+		return
+	}
+	defer func() {
+		if err := smuxSess.Close(); err != nil {
+			log.Printf("failed to close smux session: %v", err)
+		}
+	}()
+	log.Printf("smux session established (server)")
+
+	// 3. Accept smux streams and forward to backend via TCP
+	var wg sync.WaitGroup
+	for {
+		stream, err := smuxSess.AcceptStream()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+			default:
+				log.Printf("smux accept error: %s", err)
+			}
+			break
+		}
+
+		wg.Add(1)
+		go func(s *smux.Stream) {
+			defer wg.Done()
+
+			defer func() {
+				if err := s.Close(); err != nil && err != smux.ErrGoAway {
+					log.Printf("failed to close smux stream: %v", err)
+				}
+			}()
+
+			// Connect to backend (Xray/VLESS)
+			backendConn, err := net.DialTimeout("tcp", connectAddr, 10*time.Second)
+			if err != nil {
+				log.Printf("backend dial error: %s", err)
+				return
+			}
+			defer func() {
+				if err := backendConn.Close(); err != nil {
+					log.Printf("failed to close backend connection: %v", err)
+				}
+			}()
+
+			// Bidirectional copy
+			pipeConn(ctx, s, backendConn)
+		}(stream)
+	}
+	wg.Wait()
+}
+
+// pipeConn copies data bidirectionally between two connections.
+func pipeConn(ctx context.Context, c1, c2 net.Conn) {
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	context.AfterFunc(ctx2, func() {
+		if err := c1.SetDeadline(time.Now()); err != nil {
+			log.Printf("pipeConn: failed to set deadline c1: %v", err)
+		}
+		if err := c2.SetDeadline(time.Now()); err != nil {
+			log.Printf("pipeConn: failed to set deadline c2: %v", err)
+		}
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		if _, err := io.Copy(c1, c2); err != nil {
+			log.Printf("pipeConn: c1<-c2 copy error: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if _, err := io.Copy(c2, c1); err != nil {
+			log.Printf("pipeConn: c2<-c1 copy error: %v", err)
+		}
+	}()
+
+	wg.Wait()
+
+	// Reset deadlines
+	_ = c1.SetDeadline(time.Time{})
+	_ = c2.SetDeadline(time.Time{})
 }
